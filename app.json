@@ -1,0 +1,44 @@
+{
+    "name": "Anime Auto Downloader",
+    "description": "Telegram Bot for Anime Downloading",
+    "keywords": [
+        "telegram",
+        "bot",
+        "python",
+        "anime"
+    ],
+    "repository": "https://github.com/iamelite/YA",
+    "success_url": "/",
+    "env": {
+        "UPSTREAM_REPO": {
+            "description": "Upstream Repository URL for updates",
+            "value": "https://github.com/iamelite/YA",
+            "required": false
+        },
+        "UPSTREAM_BRANCH": {
+            "description": "Upstream Branch name",
+            "value": "main",
+            "required": false
+        }
+    },
+    "buildpacks": [
+        {
+            "url": "https://github.com/heroku/heroku-buildpack-apt"
+        },
+        {
+            "url": "https://github.com/heroku/heroku-buildpack-google-chrome"
+        },
+        {
+            "url": "https://github.com/heroku/heroku-buildpack-chromedriver"
+        },
+        {
+            "url": "heroku/python"
+        }
+    ],
+    "formation": {
+        "worker": {
+            "quantity": 1,
+            "size": "standard-2x"
+        }
+    }
+}
