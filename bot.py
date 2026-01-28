@@ -1490,7 +1490,7 @@ bot = Client(
     # ipv6=True ko hata diya hai kyunki error aa raha tha
     max_concurrent_transmissions=20,  # <-- Isko 10 se badhakar 20 kar diya (Full Power)
     sleep_threshold=60, # FloodWait se bachne ke liye
-    workdir="/home/ubuntu/animebot"
+    in_memory=True,
 )
 
 # ==========================================
