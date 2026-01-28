@@ -12,7 +12,7 @@
     "env": {
         "UPSTREAM_REPO": {
             "description": "Upstream Repository URL for updates",
-            "value": "https://github.com/IamElite/TNB.git",
+            "value": "https://github.com/IamElite/TNB",
             "required": false
         },
         "UPSTREAM_BRANCH": {
@@ -27,9 +27,6 @@
         },
         {
             "url": "https://github.com/heroku/heroku-buildpack-chrome-for-testing"
-        },
-        {
-            "url": "https://github.com/heroku/heroku-buildpack-chromedriver"
         },
         {
             "url": "heroku/python"

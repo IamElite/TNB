@@ -38,7 +38,7 @@ BOT_USERNAME = None
 # ==========================================
 API_ID = int(os.environ.get("API_ID", 23200475))
 API_HASH = os.environ.get("API_HASH", "644e1d9e8028a5295d6979bb3a36b23b")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8002649579:AAE0QMXmxW5h_4blL2rV9qFnC2GjSYykkbU")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "7810985319:AAHSaD-YlHThm2JPoOY_vnJLs9jXpaWs4ts")
 OWNER_ID = int(os.environ.get("OWNER_ID", 7074383232))
 
 # ==========================================
@@ -1460,10 +1460,22 @@ def get_chrome_options():
     opts.add_argument('--disable-dev-shm-usage')
     opts.add_argument('--disable-gpu')
     opts.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+    
+    # Check for Heroku Chrome path
+    heroku_chrome_path = "/app/.chrome-for-testing/chrome-linux64/chrome"
+    if os.path.exists(heroku_chrome_path):
+        opts.binary_location = heroku_chrome_path
+        
     return opts
 
 def get_driver():
-    service = Service(ChromeDriverManager().install())
+    # Check for Heroku ChromeDriver path
+    heroku_driver_path = "/app/.chrome-for-testing/chromedriver-linux64/chromedriver"
+    if os.path.exists(heroku_driver_path):
+        service = Service(executable_path=heroku_driver_path)
+    else:
+        service = Service(ChromeDriverManager().install())
+        
     return webdriver.Chrome(service=service, options=get_chrome_options())
 
 def get_driver_with_download(download_dir):
@@ -1474,7 +1486,14 @@ def get_driver_with_download(download_dir):
         "safebrowsing.enabled": True
     }
     opts.add_experimental_option("prefs", prefs)
-    service = Service(ChromeDriverManager().install())
+    
+    # Check for Heroku ChromeDriver path
+    heroku_driver_path = "/app/.chrome-for-testing/chromedriver-linux64/chromedriver"
+    if os.path.exists(heroku_driver_path):
+        service = Service(executable_path=heroku_driver_path)
+    else:
+        service = Service(ChromeDriverManager().install())
+
     d = webdriver.Chrome(service=service, options=opts)
     d.execute_cdp_cmd("Page.setDownloadBehavior", {"behavior": "allow", "downloadPath": download_dir})
     return d
