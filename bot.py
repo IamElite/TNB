@@ -1593,13 +1593,18 @@ class Resolver:
             if self.st:
                 await self.st.update("🚀 **Getting Swift URL (Backend)...**")
             
+            # Migration to toono.in if using toono.app for trdownload
+            if "toono.app" in hidden and "trdownload" in hidden:
+                print(f"🔄 Migrating hidden link to toono.in: {hidden[:60]}...")
+                hidden = hidden.replace("toono.app", "toono.in")
+
             print(f"🚀 Fetching hidden link (Backend): {hidden[:60]}...")
             
             # Use Session for better cookie and redirect handling
             session = requests.Session()
             session.headers.update({
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Referer": "https://toono.app/"
+                "Referer": "https://toono.in/"
             })
             
             try:
@@ -1607,25 +1612,11 @@ class Resolver:
                 response = session.get(hidden, timeout=20, verify=False)
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
                 # If DNS or Connection fails, check if it's flash.aipebel.com
-                if "flash.aipebel.com" in str(e):
-                    print("   ⚠️ flash.aipebel.com DNS failed, trying direct aipebel.com...")
-                    # Try to fetch manually without the subdomain if it fails
-                    # Note: We can't easily follow the exact path without the redirect chain, 
-                    # but we can try to fetch the base hidden URL without following redirects
-                    try:
-                        res_nr = session.get(hidden, allow_redirects=False, timeout=15, verify=False)
-                        if res_nr.status_code in [301, 302]:
-                            loc = res_nr.headers.get('Location', '')
-                            if "flash.aipebel.com" in loc:
-                                loc = loc.replace("flash.aipebel.com", "aipebel.com")
-                                print(f"   💡 Redirect overridden to: {loc[:60]}...")
-                                response = session.get(loc, timeout=20, verify=False)
-                            else:
-                                response = session.get(loc, timeout=20, verify=False)
-                        else:
-                            response = res_nr
-                    except:
-                        raise e
+                if "flash.aipebel.com" in str(e) or "aipebel.com" in str(e):
+                    print("   ⚠️ aipebel.com DNS failed, trying to bypass or find other mirrors...")
+                    # Note: Without a working redirector, we depend on page source containing the multiquality link
+                    # If this fails, next version would need a hardcoded IP or different service
+                    raise e
                 else:
                     raise e
 
@@ -1641,10 +1632,10 @@ class Resolver:
                 return url
             
             # Check page source for the swift link
-            if "aipebel" in url or "flash" in url or "multiquality" in response.text:
-                page_source = response.text
+            source_to_check = response.text
+            if "multiquality" in source_to_check:
                 # Look for swift.multiquality.click link
-                m = re.search(r'(https?://[^"\']*swift\.multiquality\.click[^"\']*)', page_source)
+                m = re.search(r'(https?://[^"\']*swift\.multiquality\.click[^"\']*)', source_to_check)
                 if m:
                     swift_url = m.group(1).replace('\\','')
                     print(f"   ✅ Swift from page source: {swift_url}")
@@ -1670,6 +1661,11 @@ class Finder:
         try:
             if self.st:
                 await self.st.update("📂 **Fetching series (Backend)...**")
+
+            # Migration to toono.in
+            if "toono.app" in url:
+                print(f"🔄 Migrating series URL to toono.in: {url[:60]}...")
+                url = url.replace("toono.app", "toono.in")
 
             print(f"🔍 Fetching series page (Backend): {url[:60]}...")
             response = safe_request(url)
@@ -1783,27 +1779,27 @@ class Finder:
             print(f"Finder Error: {e}")
             traceback.print_exc()
             return None, None, None, []
-        finally:
-            if self.d:
-                try:
-                    self.d.quit()
-                except:
-                    pass
-                self.d = None
 
     async def get_latest_from_home(self, url):
+        """Backend version of home checker"""
         try:
             if self.st:
-                await self.st.update("🏠 **Checking home page...**")
-            if not self.d:
-                self.d = self.setup()
-            self.d.get(url)
-            WebDriverWait(self.d, 10).until(EC.presence_of_element_located((By.TAG_NAME, "a")))
-            soup = BeautifulSoup(self.d.page_source, 'html.parser')
+                await self.st.update("🏠 **Checking home page (Backend)...**")
+            
+            # Migration to toono.in
+            if "toono.app" in url:
+                url = url.replace("toono.app", "toono.in")
+
+            print(f"🔍 Fetching home page (Backend): {url}")
+            response = safe_request(url)
+            if not response:
+                return []
+
+            soup = BeautifulSoup(response.text, 'html.parser')
+            links = []
             for a in soup.find_all("a", href=True):
                 href = a['href']
                 if "/episode/" in href or "/series/" in href:
-                    return href
             return None
         except:
             return None
