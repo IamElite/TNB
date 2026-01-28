@@ -1800,13 +1800,14 @@ class Finder:
             for a in soup.find_all("a", href=True):
                 href = a['href']
                 if "/episode/" in href or "/series/" in href:
-            return None
-        except:
-            return None
-        finally:
-            if self.d:
-                self.d.quit()
-                self.d = None
+                    if href.startswith("/"):
+                        href = "https://toono.in" + href
+                    if href not in links:
+                        links.append(href)
+            return links
+        except Exception as e:
+            print(f"Home Check Error: {e}")
+            return []
 
 
 # ==========================================
