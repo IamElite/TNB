@@ -1551,81 +1551,76 @@ class Resolver:
         self.h = {"User-Agent": "Mozilla/5.0"}
 
     async def get_hidden(self, url):
-        d = None
         try:
             if self.st:
-                await self.st.update("🔍 **Extracting link...**")
+                await self.st.update("🔍 **Extracting link (Backend)...**")
             
-            print(f"🔍 Opening episode page: {url[:60]}...")
-            d = get_driver()
-            d.get(url)
-            await asyncio.sleep(5)
-            
-            soup = BeautifulSoup(d.page_source, 'html.parser')
+            print(f"🔍 Fetching episode page (Backend): {url[:60]}...")
+            response = safe_request(url)
+            if not response:
+                print(f"   ❌ Failed to fetch page: {url}")
+                return None
+
+            soup = BeautifulSoup(response.text, 'html.parser')
             
             for e in soup.find_all(attrs={"data-url": True}):
                 try:
                     dec = base64.b64decode(e['data-url']).decode()
                     if "trdownload" in dec:
+                        # Ensure it's a full URL
+                        if dec.startswith("//"):
+                            dec = "https:" + dec
+                        elif dec.startswith("/"):
+                            # This depends on the base URL, assuming toono.app
+                            dec = "https://toono.app" + dec
+                        
                         print(f"   ✅ Hidden link extracted: {dec[:60]}...")
                         return dec
                 except Exception as err:
                     print(f"   ⚠️ Decode error: {err}")
                     pass
             
-            print(f"   ❌ No data-url attribute found in page")
+            print(f"   ❌ No data-url attribute found in page content")
             return None
             
         except Exception as e:
             print(f"❌ get_hidden error: {e}")
             traceback.print_exc()
             return None
-        finally:
-            if d:
-                try:
-                    d.quit()
-                except:
-                    pass
 
     async def get_swift(self, hidden):
-        d = None
         try:
             if self.st:
-                await self.st.update("🚀 **Getting Swift URL...**")
+                await self.st.update("🚀 **Getting Swift URL (Backend)...**")
             
-            print(f"🚀 Opening hidden link: {hidden[:60]}...")
-            d = get_driver()
-            d.get(hidden)
-            await asyncio.sleep(8)
+            print(f"🚀 Fetching hidden link (Backend): {hidden[:60]}...")
+            response = safe_request(hidden)
+            if not response:
+                print(f"   ❌ Failed to fetch hidden link: {hidden}")
+                return None
             
-            url = d.current_url
-            print(f"   Current URL: {url[:60]}...")
+            url = response.url
+            print(f"   Final URL: {url[:60]}...")
             
             if "multiquality" in url:
                 print(f"   ✅ Swift from redirect: {url}")
                 return url
             
             if "aipebel" in url or "flash" in url:
-                page_source = d.page_source
+                page_source = response.text
                 m = re.search(r'(https?://[^"\']*swift\.multiquality\.click[^"\']*)', page_source)
                 if m:
                     swift_url = m.group(1).replace('\\','')
                     print(f"   ✅ Swift from page source: {swift_url}")
                     return swift_url
             
-            print(f"   ❌ Swift not found. Final URL: {url}")
+            print(f"   ❌ Swift not found in response. Final URL: {url}")
             return None
             
         except Exception as e:
             print(f"❌ get_swift error: {e}")
             traceback.print_exc()
             return None
-        finally:
-            if d:
-                try:
-                    d.quit()
-                except:
-                    pass
 
 # ==========================================
 # ANIME FINDER - FIXED VERSION
