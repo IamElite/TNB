@@ -1594,7 +1594,41 @@ class Resolver:
                 await self.st.update("🚀 **Getting Swift URL (Backend)...**")
             
             print(f"🚀 Fetching hidden link (Backend): {hidden[:60]}...")
-            response = safe_request(hidden)
+            
+            # Use Session for better cookie and redirect handling
+            session = requests.Session()
+            session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://toono.app/"
+            })
+            
+            try:
+                # First attempt - allow normal redirects
+                response = session.get(hidden, timeout=20, verify=False)
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                # If DNS or Connection fails, check if it's flash.aipebel.com
+                if "flash.aipebel.com" in str(e):
+                    print("   ⚠️ flash.aipebel.com DNS failed, trying direct aipebel.com...")
+                    # Try to fetch manually without the subdomain if it fails
+                    # Note: We can't easily follow the exact path without the redirect chain, 
+                    # but we can try to fetch the base hidden URL without following redirects
+                    try:
+                        res_nr = session.get(hidden, allow_redirects=False, timeout=15, verify=False)
+                        if res_nr.status_code in [301, 302]:
+                            loc = res_nr.headers.get('Location', '')
+                            if "flash.aipebel.com" in loc:
+                                loc = loc.replace("flash.aipebel.com", "aipebel.com")
+                                print(f"   💡 Redirect overridden to: {loc[:60]}...")
+                                response = session.get(loc, timeout=20, verify=False)
+                            else:
+                                response = session.get(loc, timeout=20, verify=False)
+                        else:
+                            response = res_nr
+                    except:
+                        raise e
+                else:
+                    raise e
+
             if not response:
                 print(f"   ❌ Failed to fetch hidden link: {hidden}")
                 return None
@@ -1606,8 +1640,10 @@ class Resolver:
                 print(f"   ✅ Swift from redirect: {url}")
                 return url
             
-            if "aipebel" in url or "flash" in url:
+            # Check page source for the swift link
+            if "aipebel" in url or "flash" in url or "multiquality" in response.text:
                 page_source = response.text
+                # Look for swift.multiquality.click link
                 m = re.search(r'(https?://[^"\']*swift\.multiquality\.click[^"\']*)', page_source)
                 if m:
                     swift_url = m.group(1).replace('\\','')
@@ -1627,40 +1663,29 @@ class Resolver:
 # ==========================================
 class Finder:
     def __init__(self, st=None):
-        self.st, self.d = st, None
-
-    def setup(self):
-        return get_driver()
+        self.st = st
 
     async def get_info(self, url):
-        """Fetch series info with PROPER SEASON DETECTION"""
+        """Fetch series info (Backend Version)"""
         try:
             if self.st:
-                await self.st.update("📂 **Fetching series...**")
+                await self.st.update("📂 **Fetching series (Backend)...**")
 
-            if not self.d:
-                self.d = self.setup()
+            print(f"🔍 Fetching series page (Backend): {url[:60]}...")
+            response = safe_request(url)
+            if not response:
+                print(f"   ❌ Failed to fetch series page: {url}")
+                return None
 
-            self.d.get(url)
-            await asyncio.sleep(3)
-
-            WebDriverWait(self.d, 15).until(EC.presence_of_element_located((By.TAG_NAME, "a")))
-
-            # Scroll to load all episodes
-            for scroll in range(5):
-                self.d.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                await asyncio.sleep(1)
-
-            self.d.execute_script("window.scrollTo(0, 0);")
-            await asyncio.sleep(1)
-
-            soup = BeautifulSoup(self.d.page_source, 'html.parser')
+            soup = BeautifulSoup(response.text, 'html.parser')
 
             # Get title
             title = "Unknown"
             h1 = soup.find("h1")
             if h1:
                 title = h1.get_text(strip=True)
+            
+            print(f"   ✅ Title: {title}")
 
             # ==========================================
             # 🔥 FIXED: Store (season, episode, url)
