@@ -7,12 +7,12 @@
         "python",
         "anime"
     ],
-    "repository": "https://github.com/iamelite/YA",
+    "repository": "https://github.com/IamElite/TNB.git",
     "success_url": "/",
     "env": {
         "UPSTREAM_REPO": {
             "description": "Upstream Repository URL for updates",
-            "value": "https://github.com/iamelite/YA",
+            "value": "https://github.com/IamElite/TNB.git",
             "required": false
         },
         "UPSTREAM_BRANCH": {
