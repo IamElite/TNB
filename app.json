@@ -3,26 +3,6 @@
     "description": "Telegram bot for bypassing, downloading and uploading anime",
     "repository": "https://github.com/IamElite/TNB",
     "env": {
-        "API_ID": {
-            "description": "Your Telegram API ID (numeric)",
-            "required": true
-        },
-        "API_HASH": {
-            "description": "Your Telegram API Hash",
-            "required": true
-        },
-        "BOT_TOKEN": {
-            "description": "Your Telegram Bot Token",
-            "required": true
-        },
-        "OWNER_ID": {
-            "description": "Your Telegram User ID (numeric)",
-            "required": true
-        },
-        "AUTH_CHAT": {
-            "description": "Allowed Group/Channel Chat ID (numeric, e.g. -100...)",
-            "required": true
-        },
         "UPSTREAM_REPO": {
             "description": "Upstream Repository URL",
             "value": "https://github.com/IamElite/TNB",

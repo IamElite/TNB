@@ -21,8 +21,9 @@ class HindiAnimeZone:
             'Referer': self.BASE_URL
         })
 
-    def pro_main_bypass(self, url):
-        """Main entry point to bypass anime pages or direct gate links."""
+    def pro_main_bypass(self, url, selection=None):
+        """Main entry point to bypass anime pages or direct gate links.
+        Selection can be a list of episode indices (1-indexed)."""
         print(f"[*] ANALYZING: {url}")
         
         if self.GATE_PATTERN.search(url):
@@ -42,7 +43,19 @@ class HindiAnimeZone:
                 self.process_legacy_page(soup)
                 return
 
-            print(f"\n[+] FOUND {len(episodes)} CONTENT BLOCK(S)")
+            # Apply selection if provided
+            if selection:
+                selected_episodes = []
+                for idx in selection:
+                    if 1 <= idx <= len(episodes):
+                        selected_episodes.append(episodes[idx-1])
+                episodes = selected_episodes
+
+            if not episodes:
+                print("[!] No episodes match selection.")
+                return
+
+            print(f"\n[+] PROCESSING {len(episodes)} CONTENT BLOCK(S)")
             seen_hrefs = set()
             
             for ep_div in episodes:

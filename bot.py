@@ -13,11 +13,11 @@ from pyrogram.types import Message
 from HindiAnimeZone import HindiAnimeZone
 from RareAnimes import RareAnimes
 
-API_ID = int(os.environ.get("API_ID", "1234567"))
-API_HASH = os.environ.get("API_HASH", "your_hash")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_token")
-OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
-AUTH_CHAT = int(os.environ.get("AUTH_CHAT", "0"))
+API_ID = int(os.environ.get("API_ID", 23200475))
+API_HASH = os.environ.get("API_HASH", "644e1d9e8028a5295d6979bb3a36b23b")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "7810985319:AAHSaD-YlHThm2JPoOY_vnJLs9jXpaWs4ts")
+OWNER_ID = int(os.environ.get("OWNER_ID", 7074383232))
+AUTH_CHAT = int(os.environ.get("AUTH_CHAT", -1003192464251))
 
 app = Client(
     "anime_bot",
@@ -117,133 +117,164 @@ async def download_file(url, file_name, status_msg):
         await status_msg.edit(f"❌ Download failed: {str(e)}")
         return False
 
+def parse_selection(args):
+    """Parses selection strings like '1', '1-5', '1 5' into a list of indices or (start, end)."""
+    if not args:
+        return None
+    
+    # Handle '1 5' format
+    if len(args) == 2 and args[0].isdigit() and args[1].isdigit():
+        s, e = int(args[0]), int(args[1])
+        return list(range(min(s, e), max(s, e) + 1))
+    
+    selection_str = "".join(args)
+    indices = set()
+    for part in selection_str.split(','):
+        if '-' in part:
+            try:
+                start, end = map(int, part.split('-'))
+                indices.update(range(min(start, end), max(start, end) + 1))
+            except ValueError: continue
+        elif part.isdigit():
+            indices.add(int(part))
+    
+    return sorted(list(indices)) if indices else None
+
 @app.on_message(filters.command("start") & filters.incoming)
 async def start_cmd(client, message):
     if not is_authorized(message):
         return await message.reply("⛔ Aap authorized nahi hain is bot ko use karne ke liye.")
-    await message.reply("✅ Bot is alive and authorized!\n\n**Commands:**\n`/hindianime <url>`\n`/rareanime <url>`")
+    await message.reply("✅ Bot is alive and authorized!\n\n**Usage:**\n`/get <url> [selection]`\nSelection examples: `1`, `1-5`, `1 5`, `1,3,5-7`")
 
-@app.on_message(filters.command("hindianime") & filters.incoming)
-async def hindianime_cmd(client, message):
+@app.on_message(filters.command("get") & filters.incoming)
+async def get_cmd(client, message):
     if not is_authorized(message):
         return await message.reply("⛔ Unauthorized")
         
     if len(message.command) < 2:
-        return await message.reply("Usage: `/hindianime <url>`")
+        return await message.reply("Usage: `/get <url> [selection]`\nExample: `/get https://... 1-5`")
         
     url = message.command[1]
-    status_msg = await message.reply("🔄 Analyzing HindiAnimeZone link...")
+    selection_args = message.command[2:]
+    selection = parse_selection(selection_args)
     
+    status_msg = await message.reply("🔄 Analyzing link...")
+    
+    try:
+        # Site Detection
+        if "hindianimezone.com" in url:
+            await handle_hindianime(client, message, url, selection, status_msg)
+        elif any(x in url for x in ["rareanimes.app", "codedew.com"]):
+            await handle_rareanime(client, message, url, selection, status_msg)
+        else:
+            await status_msg.edit("❌ Unsupported site. Sirf HindiAnimeZone aur RareAnimes supported hain.")
+            
+    except Exception as e:
+        await status_msg.edit(f"❌ Error occurred: {str(e)}")
+
+async def handle_hindianime(client, message, url, selection, status_msg):
     try:
         def bypass_func():
             f = io.StringIO()
             with redirect_stdout(f):
                 bypasser = HindiAnimeZone()
-                bypasser.pro_main_bypass(url)
+                bypasser.pro_main_bypass(url, selection=selection)
             return f.getvalue()
             
         output = await asyncio.to_thread(bypass_func)
         
         links = []
-        for line in output.split('\\n'):
-            if '[PRO] FINAL DL: ' in line:
-                links.append(line.split('[PRO] FINAL DL: ')[1].strip())
+        for line in output.split('\n'):
+            if '[PRO] FINAL DL' in line:
+                links.append(line.split('): ')[1].strip() if '): ' in line else line.split(': ')[1].strip())
             
         if not links:
-            return await status_msg.edit("❌ Koi download links nahi mile. API fail ho gayi ya structure change ho gaya.")
+            return await status_msg.edit("❌ Koi download links nahi mile.")
             
-        await status_msg.edit(f"✅ Found {len(links)} links. Downloading first one...")
+        await status_msg.edit(f"✅ Found {len(links)} links. Downloading and uploading...")
         
-        dl_url = links[0]
-        file_name = f"hindianime_{message.id}.mkv"
-        
-        success = await download_file(dl_url, file_name, status_msg)
-        if not success: return
-        
-        await status_msg.edit("📤 **Uploading to Telegram...**")
-        start_time = time.time()
-        
-        await client.send_document(
-            chat_id=message.chat.id,
-            document=file_name,
-            caption="Downloaded via @HindiAnimeZone",
-            progress=progress_for_pyrogram,
-            progress_args=("📤 **Uploading to Telegram...**", status_msg, start_time)
-        )
-        
+        for idx, dl_url in enumerate(links, 1):
+            file_name = f"hindianime_{message.id}_{idx}.mkv"
+            await status_msg.edit(f"📥 **Downloading Part {idx}/{len(links)}...**")
+            
+            success = await download_file(dl_url, file_name, status_msg)
+            if not success: continue
+            
+            await status_msg.edit(f"📤 **Uploading Part {idx}/{len(links)}...**")
+            start_time = time.time()
+            
+            await client.send_document(
+                chat_id=message.chat.id,
+                document=file_name,
+                caption=f"Part {idx} via @HindiAnimeZone",
+                progress=progress_for_pyrogram,
+                progress_args=(f"📤 **Uploading Part {idx}...**", status_msg, start_time)
+            )
+            os.remove(file_name)
+            
         await status_msg.delete()
-        os.remove(file_name)
             
     except Exception as e:
-        await status_msg.edit(f"❌ Error occurred: {str(e)}")
-        file_path = f"hindianime_{message.id}.mkv"
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        await status_msg.edit(f"❌ HindiAnimeZone Error: {str(e)}")
 
-@app.on_message(filters.command("rareanime") & filters.incoming)
-async def rareanime_cmd(client, message):
-    if not is_authorized(message):
-        return await message.reply("⛔ Unauthorized")
-        
-    if len(message.command) < 2:
-        return await message.reply("Usage: `/rareanime <url>`")
-        
-    url = message.command[1]
-    status_msg = await message.reply("🔄 Analyzing RareAnimes link...")
-    
+async def handle_rareanime(client, message, url, selection, status_msg):
     try:
+        # RareAnimes selection needs start/end
+        ep_start, ep_end = None, None
+        if selection:
+            ep_start = min(selection)
+            ep_end = max(selection)
+            
         def bypass_func():
             bypasser = RareAnimes()
-            return bypasser.get_links(url, verbose=False)
+            return bypasser.get_links(url, ep_start=ep_start, ep_end=ep_end, verbose=False)
             
         res = await asyncio.to_thread(bypass_func)
         
         if "error" in res and not res.get("episodes"):
-            return await status_msg.edit(f"❌ API fail ho gaya. Error: {res.get('error')}")
+            return await status_msg.edit(f"❌ API fail: {res.get('error')}")
             
         episodes = res.get("episodes", [])
         if not episodes:
             return await status_msg.edit("❌ Koi episodes nahi mile.")
             
-        first_ep = episodes[0]
-        downloads = first_ep.get("downloads", [])
+        total = len(episodes)
+        await status_msg.edit(f"✅ Found {total} episodes. Downloading and uploading...")
         
-        if not downloads:
-            return await status_msg.edit("❌ Koi download link generate nahi hua.")
+        for idx, ep in enumerate(episodes, 1):
+            downloads = ep.get("downloads", [])
+            if not downloads: continue
             
-        dl_url = downloads[0]
-        if isinstance(dl_url, str) and ': http' in dl_url:
-            dl_url = dl_url.split(': http')[1].strip()
-            dl_url = 'http' + dl_url
-        elif isinstance(dl_url, dict) and 'url' in dl_url:
-            dl_url = dl_url['url']
+            dl_url = downloads[0]
+            if isinstance(dl_url, str) and ': http' in dl_url:
+                dl_url = 'http' + dl_url.split(': http')[1].strip()
+            elif isinstance(dl_url, dict) and 'link' in dl_url:
+                dl_url = dl_url['link']
+            elif isinstance(dl_url, dict) and 'url' in dl_url:
+                dl_url = dl_url['url']
+                
+            file_name = f"rareanime_{message.id}_{idx}.mkv"
+            await status_msg.edit(f"📥 **Downloading Ep {idx}/{total}...**\n{ep['episode']}")
             
-        await status_msg.edit(f"✅ Found episode link. Downloading...")
-        
-        file_name = f"rareanime_{message.id}.mkv"
-        
-        success = await download_file(dl_url, file_name, status_msg)
-        if not success: return
-        
-        await status_msg.edit("📤 **Uploading to Telegram...**")
-        start_time = time.time()
-        
-        await client.send_document(
-            chat_id=message.chat.id,
-            document=file_name,
-            caption="Downloaded via RareAnimes",
-            progress=progress_for_pyrogram,
-            progress_args=("📤 **Uploading to Telegram...**", status_msg, start_time)
-        )
-        
+            success = await download_file(dl_url, file_name, status_msg)
+            if not success: continue
+            
+            await status_msg.edit(f"📤 **Uploading Ep {idx}/{total}...**")
+            start_time = time.time()
+            
+            await client.send_document(
+                chat_id=message.chat.id,
+                document=file_name,
+                caption=f"{ep['episode']} via RareAnimes",
+                progress=progress_for_pyrogram,
+                progress_args=(f"📤 **Uploading Ep {idx}...**", status_msg, start_time)
+            )
+            os.remove(file_name)
+            
         await status_msg.delete()
-        os.remove(file_name)
             
     except Exception as e:
-        await status_msg.edit(f"❌ Error occurred: {str(e)}")
-        file_path = f"rareanime_{message.id}.mkv"
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        await status_msg.edit(f"❌ RareAnimes Error: {str(e)}")
 
 if __name__ == "__main__":
     print("Starting bot...")
