@@ -4,6 +4,9 @@ import random
 import time
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone
+import logging
+
+logger = logging.getLogger("HindiAnimeZone")
 
 class HindiAnimeZone:
     def __init__(self):
@@ -24,7 +27,7 @@ class HindiAnimeZone:
     def pro_main_bypass(self, url, selection=None):
         """Main entry point to bypass anime pages or direct gate links.
         Selection can be a list of episode indices (1-indexed)."""
-        print(f"[*] ANALYZING: {url}")
+        logger.info(f"[*] ANALYZING: {url}")
         
         if self.GATE_PATTERN.search(url):
             self._handle_direct_gate(url)
@@ -52,10 +55,10 @@ class HindiAnimeZone:
                 episodes = selected_episodes
 
             if not episodes:
-                print("[!] No episodes match selection.")
+                logger.warning("[!] No episodes match selection.")
                 return
 
-            print(f"\n[+] PROCESSING {len(episodes)} CONTENT BLOCK(S)")
+            logger.info(f"\n[+] PROCESSING {len(episodes)} CONTENT BLOCK(S)")
             seen_hrefs = set()
             
             for ep_div in episodes:
@@ -65,18 +68,18 @@ class HindiAnimeZone:
                 quality_map = self._get_quality_links(ep_div, seen_hrefs)
                 if not quality_map: continue
                     
-                print(f"\n{'='*40}\n[*] PROCESSING: {ep_name.split('|')[0].strip()}")
+                logger.info(f"\n{'='*40}\n[*] PROCESSING: {ep_name.split('|')[0].strip()}")
                 for q, data in quality_map.items():
-                    print(f"\n    [*] QUALITY: {data['label']}")
+                    logger.info(f"\n    [*] QUALITY: {data['label']}")
                     server_links = self.bypass_gate(data['url'])
                     if server_links:
                         for s, l in server_links.items(): 
-                            print(f"        {s}: {l}")
+                            logger.info(f"        {s}: {l}")
                             self.get_final_link(s, l)
                     else:
-                        print(f"        [!] Failed to extract server links")
+                        logger.warning(f"        [!] Failed to extract server links")
         except Exception as e:
-            print(f"[!] Error: {e}")
+            logger.error(f"[!] Error: {e}", exc_info=True)
 
     def _extract_ep_name(self, ep_div, fallback):
         tag = ep_div.select_one('.episode-title')
@@ -111,9 +114,9 @@ class HindiAnimeZone:
     def _handle_direct_gate(self, url):
         links = self.bypass_gate(url)
         if links:
-            print(f"[+] SERVERS EXTRACTED:")
+            logger.info(f"[+] SERVERS EXTRACTED:")
             for n, l in links.items(): 
-                print(f"    - {n}: {l}")
+                logger.info(f"    - {n}: {l}")
                 self.get_final_link(n, l)
 
 
@@ -205,13 +208,13 @@ class HindiAnimeZone:
         srv = srv_name.upper()
         if 'GDSHARE' in srv:
             dl = self._get_gdshare_link(url)
-            if dl: print(f"        [PRO] FINAL DL (GDShare): {dl}")
+            if dl: logger.info(f"        [PRO] FINAL DL (GDShare): {dl}")
         elif 'GDFLIX' in srv:
             dl = self._get_gdflix_link(url)
-            if dl: print(f"        [PRO] FINAL DL (GDFlix): {dl}")
+            if dl: logger.info(f"        [PRO] FINAL DL (GDFlix): {dl}")
         elif 'FILEPRESS' in srv:
             dl = self._get_filepress_link(url)
-            if dl: print(f"        [PRO] FINAL DL (FilePress): {dl}")
+            if dl: logger.info(f"        [PRO] FINAL DL (FilePress): {dl}")
 
     def get_episode_info(self, url):
         """Deep scans post page for the latest Hindi/Multi episode."""
@@ -233,7 +236,7 @@ class HindiAnimeZone:
 
     def get_latest_updates(self):
         """Fetches updates from the last 12 hours with deep scanning."""
-        print("[*] FETCHING LATEST UPDATES (LAST 12 HOURS)...")
+        logger.info("[*] FETCHING LATEST UPDATES (LAST 12 HOURS)...")
         try:
             r = self.session.get(self.BASE_URL, timeout=15)
             soup = BeautifulSoup(r.text, 'html.parser')
@@ -252,7 +255,7 @@ class HindiAnimeZone:
                         url, title = link_tag['href'], link_tag.text.strip()
                         if any(x in url for x in ['/category/', '/tag/', '/author/']) or len(title) < 5: continue
                         if self.BASE_URL in url and not any(u['url'] == url for u in updates):
-                            print(f"    [>] Scanning: {title[:40]}...")
+                            logger.info(f"    [>] Scanning: {title[:40]}...")
                             info = self.get_episode_info(url)
                             updates.append({'title': title, 'url': url, 'time': dt.strftime('%H:%M'), 'episode': info['count'], 'language': info['status']})
                             break
@@ -260,15 +263,15 @@ class HindiAnimeZone:
                 if len(updates) >= 20: break
             return updates
         except Exception as e:
-            print(f"[!] Error: {e}"); return []
+            logger.error(f"[!] Error: {e}"); return []
 
     def process_legacy_page(self, soup):
         seen = set()
         q_map = self._get_quality_links(soup, seen)
         for q, data in q_map.items():
-            print(f"\n[*] QUALITY: {data['label']}")
+            logger.info(f"\n[*] QUALITY: {data['label']}")
             links = self.bypass_gate(data['url'])
             if links:
                 for s, l in links.items(): 
-                    print(f"    {s}: {l}")
+                    logger.info(f"    {s}: {l}")
                     self.get_final_link(s, l)

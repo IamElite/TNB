@@ -8,16 +8,6 @@ import xml.etree.ElementTree as ET
 if sys.stdout.encoding.lower() != 'utf-8':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-LOG_DIR = r"e:\timepasss\bypass anime sites hindi\logs\rareanimes logs"
-os.makedirs(LOG_DIR, exist_ok=True)
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(os.path.join(LOG_DIR, "rareanimes_script.log"), encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
 logger = logging.getLogger("RareAnimes")
 
 EP_REGEX = re.compile(r"(Episode\s*\d+|Ep\s*\d+|S\d+\s*E\d+|Movie|Special|OVA)", re.I)
@@ -47,7 +37,7 @@ class RareAnimes:
     # ─── Session ───
     def init_session(self):
         if self.initialized: return
-        print("[*] Initializing session...")
+        logger.info("[*] Initializing session...")
         try:
             self.session.get(self.ROOT_URL, timeout=10)
             if "zipper_client_id" not in self.session.cookies:
@@ -59,7 +49,7 @@ class RareAnimes:
 
     # ─── Main Bypass ───
     def bypass(self, url):
-        print(f"[*] ANALYZING: {url}")
+        logger.info(f"[*] ANALYZING: {url}")
         try:
             self.init_session()
             html = self.session.get(url, timeout=20).text
@@ -74,67 +64,76 @@ class RareAnimes:
             logger.info(f"Unique Episodes: {total} | Raw Links: {len(episodes)}")
 
             if not unique:
-                print("[!] No episodes found."); return
+                logger.warning("[!] No episodes found."); return
 
-            print(f"[+] Found {total} unique episodes to process.")
+            logger.info(f"[+] Found {total} unique episodes to process.")
             for i, (label, mirrors) in enumerate(unique.items(), 1):
-                print(f"\n[*] Processing Episode {i}/{total}: {label}")
+                logger.info(f"\n[*] Processing Episode {i}/{total}: {label}")
                 links = self._try_mirrors(mirrors)
                 if links:
                     self._print_qualities(links)
                 else:
                     logger.warning(f"Failed to fetch qualities for {label}")
 
-            print("\n" + "═"*65 + "\n  ✅  BYPASS COMPLETED\n" + "═"*65)
+            logger.info("\n" + "═"*65 + "\n  ✅  BYPASS COMPLETED\n" + "═"*65)
         except Exception as e:
-            print(f"[!] Error: {e}")
+            logger.error(f"[!] Error: {e}", exc_info=True)
 
     def get_links(self, url, ep_start=None, ep_end=None, verbose=True):
-        if verbose: print(f"[*] ANALYZING: {url}")
+        if verbose: logger.info(f"[*] ANALYZING: {url}")
         try:
             self.init_session()
             html = self.session.get(url, timeout=20).text
-            all_eps = self._extract_episodes(html, url)
+            raw_eps = self._extract_episodes(html, url)
             info = self.get_rareanime_info(html)
-            info['rare_total_on_page'] = len(all_eps)
-            if verbose: self._print_anime_info(info)
-
-            if not all_eps:
-                if verbose: print("[!] No episodes found.")
+            
+            if not raw_eps:
+                if verbose: logger.warning("[!] No episodes found on page.")
                 return {"error": "No episodes found", "info": info, "episodes": []}
 
-            s, e = 0, len(all_eps)
-            if ep_start is not None:
-                s = max(0, ep_start - 1)
-                e = (s + 1) if ep_end is None else min(len(all_eps), ep_end)
-            selected = all_eps[s:e]
+            # Professional Grouping: Group mirrors by unique episode labels
+            grouped_eps = self._group_episodes(raw_eps)
+            unique_labels = list(grouped_eps.keys())
+            total_available = len(unique_labels)
+            
+            info['rare_total_on_page'] = total_available
+            if verbose: self._print_anime_info(info)
 
-            if verbose: print(f"[+] Total {len(all_eps)}, selected {len(selected)}")
+            # Apply Selection to unique episodes
+            s_idx, e_idx = 0, total_available
+            if ep_start is not None:
+                s_idx = max(0, ep_start - 1)
+                e_idx = (s_idx + 1) if ep_end is None else min(total_available, ep_end)
+            
+            selected_labels = unique_labels[s_idx:e_idx]
+            total_selected = len(selected_labels)
+
+            if verbose:
+                logger.info(f"[SYSTEM] Sources Scanned   : {len(raw_eps)} links")
+                logger.info(f"[SYSTEM] Unique Episodes   : {total_available}")
+                logger.info(f"[SYSTEM] Selected Episodes : {total_selected}")
 
             results = []
-            orig_out = sys.stdout
-            for idx, ep in enumerate(selected, 1):
-                if verbose: print(f"\n[*] Episode {idx}/{len(selected)}: {ep['label']}")
-                if not verbose: sys.stdout = io.StringIO()
-                try:
-                    links = self.process_zipper(ep["url"], ep["referer"])
-                except Exception:
-                    links = None
-                finally:
-                    if not verbose: sys.stdout = orig_out
-
-                entry = {"episode": ep["label"], "url": ep["url"]}
+            for idx, label in enumerate(selected_labels, 1):
+                mirrors = grouped_eps[label]
+                if verbose: logger.info(f"\n[*] Processing Item {idx}/{total_selected}: {label}")
+                
+                # Try mirrors until one works
+                links = self._try_mirrors(mirrors)
+                
+                entry = {"episode": label, "url": mirrors[0]["url"]}
                 if links and isinstance(links, list):
                     entry["downloads"] = links
                     if verbose: self._print_qualities(links)
                 else:
-                    entry["downloads"], entry["error"] = [], "Failed"
+                    entry["downloads"], entry["error"] = [], "Failed to bypass"
+                    if verbose: logger.warning(f"    [!] Failed to extract links for: {label}")
                 results.append(entry)
 
-            if verbose: print("\n" + "═"*65 + "\n  ✅  BYPASS COMPLETED\n" + "═"*65)
+            if verbose: logger.info("\n" + "═"*65 + "\n  ✅  SESSIONS COMPLETED SUCCESSFULLY\n" + "═"*65)
             return {"info": info, "episodes": results}
         except Exception as e:
-            if verbose: print(f"[!] Error: {e}")
+            if verbose: logger.error(f"[!] System Error: {e}", exc_info=True)
             return {"error": str(e), "info": {}, "episodes": []}
 
     # ─── Helpers ───
@@ -151,12 +150,12 @@ class RareAnimes:
         return None
 
     def _print_qualities(self, links):
-        print(" ─" * 15)
+        logger.info(" ─" * 15)
         for item in links:
             q = item.get('label', 'N/A').ljust(10)
             s = item.get('size', 'N/A').rjust(10)
-            print(f"  ➜  {q} | {s}  |  {item.get('link')}")
-        print(" ─" * 15)
+            logger.info(f"  ➜  {q} | {s}  |  {item.get('link')}")
+        logger.info(" ─" * 15)
 
     def _quality_from_text(self, text):
         if not text: return None
@@ -207,22 +206,23 @@ class RareAnimes:
         return info
 
     def _print_anime_info(self, info):
-        print("\n" + "─"*65)
-        print(f" 📺  {info['rarefullname']}")
-        print(" ─" * 15)
+        logger.info("\n" + "─"*65)
+        logger.info(f" 📺  {info.get('rarefullname', 'Anime Info')}")
+        logger.info(" ─" * 15)
         for icon, key, name in [
             ("📅","rareyear","Year"), ("🍂","rareseason","Season"),
             ("🎞","rareepisodes","Episodes"), ("⌛","rareruntime","Runtime"),
             ("🎭","raregenre","Genre"), ("🔊","rarelanguage","Language"),
             ("🎬","rarequality","Quality"), ("🌐","rarenetwork","Network")
         ]:
-            print(f"  {icon} {name:10}: {info[key]}")
+            if key in info:
+                logger.info(f"  {icon} {name:10}: {info[key]}")
         if "rare_total_on_page" in info:
-            print(f"  🎞 On Page   : {info['rare_total_on_page']}")
-        syn = info['raresynopsis']
+            logger.info(f"  🎞 On Page   : {info['rare_total_on_page']}")
+        syn = info.get('raresynopsis', '')
         if len(syn) > 150: syn = syn[:147] + "..."
-        print(f"  📝 Synopsis  : {syn}")
-        print("─"*65 + "\n")
+        logger.info(f"  📝 Synopsis  : {syn}")
+        logger.info("─"*65 + "\n")
 
     # ─── Episode Extraction ───
     def _extract_episodes(self, html, referer):
@@ -288,7 +288,7 @@ class RareAnimes:
 
     # ─── Zipper Bypass ───
     def process_zipper(self, url, referer):
-        print(f"[*] Starting Zipper: {url[:80]}")
+        logger.info(f"[*] Starting Zipper: {url[:80]}")
         try:
             cur_url, cur_ref = url, referer
             for step in range(1, self.MAX_STEPS + 1):
@@ -305,25 +305,37 @@ class RareAnimes:
                 soup = BeautifulSoup(resp.text, "html.parser")
                 nxt = self._find_next_step(soup, cur_url)
                 if not nxt:
-                    print(f"    [!] Dead end at step {step}"); return None
-                print(f"    [*] Step {step} done...", end="\r")
+                    logger.warning(f"    [!] Dead end at step {step}"); return None
+                logger.debug(f"    [*] Step {step} done...")
                 cur_ref, cur_url = cur_url, nxt
                 time.sleep(self.STEP_DELAY)
-            print(f"\n    [!] Exceeded {self.MAX_STEPS} steps.")
+            logger.warning(f"    [!] Exceeded {self.MAX_STEPS} steps.")
         except Exception as e:
-            print(f"    [!] Zipper error: {e}")
+            logger.error(f"    [!] Zipper error: {e}")
         return None
 
     def _find_next_step(self, soup, current_url):
-        for btn_id in ["goBtn", "mainActionBtn"]:
+        # Professional Step Detection
+        # 1. Look for specific buttons by ID
+        for btn_id in ["goBtn", "mainActionBtn", "btn-main"]:
             btn = soup.find("a", id=btn_id)
             if btn and btn.has_attr("href"):
                 u = urljoin(self.ROOT_URL, btn["href"])
                 if u != current_url: return u
+        
+        # 2. Look for "ad_step=" patterns (common in zipper)
         for a in soup.find_all("a", href=True):
             if "ad_step=" in a["href"]:
                 u = urljoin(self.ROOT_URL, a["href"])
                 if u != current_url: return u
+        
+        # 3. Fallback: Any link that looks like a continuation
+        for a in soup.find_all("a", href=True):
+            txt = a.get_text(strip=True).lower()
+            if any(kw in txt for kw in ["continue", "next", "get link", "skip"]):
+                u = urljoin(self.ROOT_URL, a["href"])
+                if "/zipper/" in u and u != current_url: return u
+
         return None
 
     # ─── MultiQuality Bypass ───
