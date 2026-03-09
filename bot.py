@@ -8,6 +8,14 @@ import aiohttp
 from contextlib import redirect_stdout
 from pyrogram import Client, filters
 from pyrogram.types import Message
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)-5s | %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger("AnimeBot")
 
 # Import your custom modules
 from HindiAnimeZone import HindiAnimeZone
@@ -25,6 +33,8 @@ app = Client(
     api_hash=API_HASH,
     bot_token=BOT_TOKEN
 )
+
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
 def is_authorized(message: Message) -> bool:
     user_id = message.from_user.id if message.from_user else 0
@@ -86,11 +96,16 @@ async def progress_for_pyrogram(current, total, ud_type, message, start):
         except Exception:
             pass
 
-async def download_file(url, file_name, status_msg):
+async def download_file(url, file_name, status_msg, referer=None):
     start_t = time.time()
+    logger.info(f"Step 5: File download started -> {file_name}")
+    headers = {"User-Agent": USER_AGENT}
+    if referer:
+        headers["Referer"] = referer
+        
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=30) as response:
+            async with session.get(url, headers=headers, timeout=30) as response:
                 total_size = int(response.headers.get('content-length', 0))
                 downloaded = 0
                 last_update = time.time()
@@ -112,8 +127,10 @@ async def download_file(url, file_name, status_msg):
                                     f"{humanbytes(downloaded)} / {humanbytes(total_size)}"
                                 )
                             except Exception: pass
+        logger.info(f"Step 5: File download complete -> {file_name}")
         return True
     except Exception as e:
+        logger.error(f"Step 5: File download failed -> {str(e)}", exc_info=True)
         await status_msg.edit(f"❌ Download failed: {str(e)}")
         return False
 
@@ -158,22 +175,29 @@ async def get_cmd(client, message):
     selection_args = message.command[2:]
     selection = parse_selection(selection_args)
     
+    logger.info(f"Step 1: Command received | URL: {url} | Selection: {selection}")
     status_msg = await message.reply("🔄 Analyzing link...")
     
     try:
         # Site Detection
+        logger.info("Step 2: URL validation & Site detection")
         if "hindianimezone.com" in url:
+            logger.info("Detected site: HindiAnimeZone")
             await handle_hindianime(client, message, url, selection, status_msg)
         elif any(x in url for x in ["rareanimes.app", "codedew.com"]):
+            logger.info("Detected site: RareAnimes")
             await handle_rareanime(client, message, url, selection, status_msg)
         else:
+            logger.warning("Unsupported site detected.")
             await status_msg.edit("❌ Unsupported site. Sirf HindiAnimeZone aur RareAnimes supported hain.")
             
     except Exception as e:
+        logger.error(f"Error in get_cmd: {e}", exc_info=True)
         await status_msg.edit(f"❌ Error occurred: {str(e)}")
 
 async def handle_hindianime(client, message, url, selection, status_msg):
     try:
+        logger.info(f"Step 3: Starting HindiAnimeZone bypass for URL: {url}")
         def bypass_func():
             f = io.StringIO()
             with redirect_stdout(f):
@@ -182,6 +206,7 @@ async def handle_hindianime(client, message, url, selection, status_msg):
             return f.getvalue()
             
         output = await asyncio.to_thread(bypass_func)
+        logger.info("HindiAnimeZone bypass output:\n" + output)
         
         links = []
         for line in output.split('\n'):
@@ -189,17 +214,21 @@ async def handle_hindianime(client, message, url, selection, status_msg):
                 links.append(line.split('): ')[1].strip() if '): ' in line else line.split(': ')[1].strip())
             
         if not links:
+            logger.warning("Step 4 Failed: No download links found in bypass output.")
             return await status_msg.edit("❌ Koi download links nahi mile.")
             
+        logger.info(f"Step 4: Extracted {len(links)} download links.")
         await status_msg.edit(f"✅ Found {len(links)} links. Downloading and uploading...")
         
         for idx, dl_url in enumerate(links, 1):
             file_name = f"hindianime_{message.id}_{idx}.mkv"
             await status_msg.edit(f"📥 **Downloading Part {idx}/{len(links)}...**")
             
-            success = await download_file(dl_url, file_name, status_msg)
+            # For HindiAnimeZone, referer can be the original page or the gate url
+            success = await download_file(dl_url, file_name, status_msg, referer=url)
             if not success: continue
             
+            logger.info(f"Step 6: Upload to Telegram started -> {file_name}")
             await status_msg.edit(f"📤 **Uploading Part {idx}/{len(links)}...**")
             start_time = time.time()
             
@@ -211,14 +240,18 @@ async def handle_hindianime(client, message, url, selection, status_msg):
                 progress_args=(f"📤 **Uploading Part {idx}...**", status_msg, start_time)
             )
             os.remove(file_name)
+            logger.info(f"Step 7: Upload complete and file deleted -> {file_name}")
             
         await status_msg.delete()
+        logger.info("Process completed successfully for HindiAnimeZone.")
             
     except Exception as e:
+        logger.error(f"HindiAnimeZone Error: {e}", exc_info=True)
         await status_msg.edit(f"❌ HindiAnimeZone Error: {str(e)}")
 
 async def handle_rareanime(client, message, url, selection, status_msg):
     try:
+        logger.info(f"Step 3: Starting RareAnimes bypass for URL: {url}")
         # RareAnimes selection needs start/end
         ep_start, ep_end = None, None
         if selection:
@@ -227,23 +260,28 @@ async def handle_rareanime(client, message, url, selection, status_msg):
             
         def bypass_func():
             bypasser = RareAnimes()
-            return bypasser.get_links(url, ep_start=ep_start, ep_end=ep_end, verbose=False)
+            return bypasser.get_links(url, ep_start=ep_start, ep_end=ep_end, verbose=True)
             
         res = await asyncio.to_thread(bypass_func)
         
         if "error" in res and not res.get("episodes"):
+            logger.error(f"Step 3 Failed: RareAnimes API Error: {res.get('error')}")
             return await status_msg.edit(f"❌ API fail: {res.get('error')}")
             
         episodes = res.get("episodes", [])
         if not episodes:
+            logger.warning("Step 4 Failed: No episodes returned.")
             return await status_msg.edit("❌ Koi episodes nahi mile.")
             
         total = len(episodes)
+        logger.info(f"Step 4: Found {total} episodes to process.")
         await status_msg.edit(f"✅ Found {total} episodes. Downloading and uploading...")
         
         for idx, ep in enumerate(episodes, 1):
             downloads = ep.get("downloads", [])
-            if not downloads: continue
+            if not downloads: 
+                logger.warning(f"No download link for episode: {ep.get('episode', 'Unknown')}")
+                continue
             
             dl_url = downloads[0]
             if isinstance(dl_url, str) and ': http' in dl_url:
@@ -254,11 +292,15 @@ async def handle_rareanime(client, message, url, selection, status_msg):
                 dl_url = dl_url['url']
                 
             file_name = f"rareanime_{message.id}_{idx}.mkv"
+            logger.info(f"Step 4: Episode {idx} link extracted successfully.")
             await status_msg.edit(f"📥 **Downloading Ep {idx}/{total}...**\n{ep['episode']}")
             
-            success = await download_file(dl_url, file_name, status_msg)
+            # For RareAnimes (groovy.monster), MQ_BASE_URL is a good referer
+            mq_ref = "https://swift.multiquality.click/"
+            success = await download_file(dl_url, file_name, status_msg, referer=mq_ref)
             if not success: continue
             
+            logger.info(f"Step 6: Upload to Telegram started -> {file_name}")
             await status_msg.edit(f"📤 **Uploading Ep {idx}/{total}...**")
             start_time = time.time()
             
@@ -270,10 +312,13 @@ async def handle_rareanime(client, message, url, selection, status_msg):
                 progress_args=(f"📤 **Uploading Ep {idx}...**", status_msg, start_time)
             )
             os.remove(file_name)
+            logger.info(f"Step 7: Upload complete and file deleted -> {file_name}")
             
         await status_msg.delete()
+        logger.info("Process completed successfully for RareAnimes.")
             
     except Exception as e:
+        logger.error(f"RareAnimes Error: {e}", exc_info=True)
         await status_msg.edit(f"❌ RareAnimes Error: {str(e)}")
 
 if __name__ == "__main__":
