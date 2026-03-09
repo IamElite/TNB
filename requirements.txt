@@ -1,0 +1,6 @@
+#pyrogram
+kurigram
+TgCrypto
+requests
+beautifulsoup4
+aiohttp
