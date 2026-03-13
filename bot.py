@@ -104,37 +104,54 @@ async def download_file(url, file_name, status_msg, referer=None, cookies=None, 
         headers["Referer"] = referer
         
     try:
-        jar = aiohttp.CookieJar(unsafe=True)
-        if cookies:
-            jar.update_cookies(cookies)
-            
-        async with aiohttp.ClientSession(cookie_jar=jar) as session:
-            async with session.get(url, headers=headers, timeout=30) as response:
-                if response.status != 200:
-                    logger.error(f"Download failed with status {response.status}")
-                    return False
+        state = {"downloaded": 0, "total": 0, "done": False, "error": None}
+        
+        def sync_download():
+            try:
+                import cloudscraper
+                scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
+                if cookies:
+                    scraper.cookies.update(cookies)
+                with scraper.get(url, headers=headers, stream=True) as r:
+                    if r.status_code != 200:
+                        state["error"] = f"HTTP {r.status_code}"
+                        return
                     
-                total_size = int(response.headers.get('content-length', 0))
-                downloaded = 0
-                last_update = time.time()
+                    state["total"] = int(r.headers.get('content-length', 0))
+                    with open(file_name, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=1024 * 1024):
+                            if chunk:
+                                f.write(chunk)
+                                state["downloaded"] += len(chunk)
+            except Exception as e:
+                state["error"] = str(e)
+            finally:
+                state["done"] = True
+
+        loop = asyncio.get_running_loop()
+        task = loop.run_in_executor(None, sync_download)
+        
+        last_update = time.time()
+        while not state["done"]:
+            await asyncio.sleep(1)
+            now = time.time()
+            if now - last_update > 5 and state["total"] > 0:
+                last_update = now
+                percentage = state["downloaded"] * 100 / state["total"] if state["total"] else 0
+                try:
+                    await status_msg.edit(
+                        f"📥 **Downloading...** {round(percentage, 2)}%\n"
+                        f"{humanbytes(state['downloaded'])} / {humanbytes(state['total'])}"
+                    )
+                except Exception: pass
                 
-                with open(file_name, 'wb') as f:
-                    async for chunk in response.content.iter_chunked(1024 * 1024):
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        
-                        now = time.time()
-                        if now - last_update > 5:
-                            last_update = now
-                            percentage = downloaded * 100 / total_size if total_size else 0
-                            try:
-                                await status_msg.edit(
-                                    f"📥 **Downloading...** {round(percentage, 2)}%\n"
-                                    f"{humanbytes(downloaded)} / {humanbytes(total_size)}"
-                                )
-                            except Exception: pass
+        await task  # Wait for thread to finish cleanly
+        
+        if state["error"]:
+            logger.error(f"Download failed with error: {state['error']}")
+            await status_msg.edit(f"❌ Download failed: {state['error']}")
+            return False
+            
         logger.info(f"Step 5: File download complete -> {file_name}")
         return True
     except Exception as e:
