@@ -5,7 +5,7 @@ import time
 import math
 import asyncio
 import json
-import aiohttp
+from curl_cffi import requests as currequests
 from contextlib import redirect_stdout
 from pyrogram import Client, filters
 from pyrogram.types import Message
@@ -154,30 +154,31 @@ async def generate_thumbnail(filepath, duration):
 async def download_file(url, file_name, status_msg, referer=None, cookies=None, user_agent=None):
     start_t = time.time()
     logger.info(f"Step 5: File download started -> {file_name}")
-    headers = {"User-Agent": user_agent or USER_AGENT}
-    if referer:
-        headers["Referer"] = referer
-        
+    
     try:
         state = {"downloaded": 0, "total": 0, "done": False, "error": None}
         
         def sync_download():
             try:
-                import cloudscraper
-                scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
-                if cookies:
-                    scraper.cookies.update(cookies)
-                with scraper.get(url, headers=headers, stream=True) as r:
-                    if r.status_code != 200:
-                        state["error"] = f"HTTP {r.status_code}"
-                        return
+                with currequests.Session(impersonate="chrome") as s:
+                    if cookies:
+                        s.cookies.update(cookies)
                     
-                    state["total"] = int(r.headers.get('content-length', 0))
-                    with open(file_name, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=1024 * 1024):
-                            if chunk:
-                                f.write(chunk)
-                                state["downloaded"] += len(chunk)
+                    headers = {"User-Agent": user_agent or USER_AGENT}
+                    if referer:
+                        headers["Referer"] = referer
+                    
+                    with s.get(url, headers=headers, stream=True, timeout=60) as r:
+                        if r.status_code != 200:
+                            state["error"] = f"HTTP {r.status_code}"
+                            return
+                        
+                        state["total"] = int(r.headers.get('content-length', 0))
+                        with open(file_name, 'wb') as f:
+                            for chunk in r.iter_content(chunk_size=1024 * 1024):
+                                if chunk:
+                                    f.write(chunk)
+                                    state["downloaded"] += len(chunk)
             except Exception as e:
                 state["error"] = str(e)
             finally:
@@ -188,7 +189,7 @@ async def download_file(url, file_name, status_msg, referer=None, cookies=None, 
         
         last_update = time.time()
         while not state["done"]:
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
             now = time.time()
             if now - last_update > 5 and state["total"] > 0:
                 last_update = now
@@ -200,17 +201,17 @@ async def download_file(url, file_name, status_msg, referer=None, cookies=None, 
                     )
                 except Exception: pass
                 
-        await task  # Wait for thread to finish cleanly
+        await task  # Wait for executor thread to finish
         
         if state["error"]:
-            logger.error(f"Download failed with error: {state['error']}")
+            logger.error(f"Download failed: {state['error']}")
             await status_msg.edit(f"❌ Download failed: {state['error']}")
             return False
             
         logger.info(f"Step 5: File download complete -> {file_name}")
         return True
     except Exception as e:
-        logger.error(f"Step 5: File download failed -> {str(e)}", exc_info=True)
+        logger.error(f"Step 5: Download error -> {str(e)}", exc_info=True)
         await status_msg.edit(f"❌ Download failed: {str(e)}")
         return False
 

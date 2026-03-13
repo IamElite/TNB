@@ -4,5 +4,5 @@ TgCrypto
 requests
 beautifulsoup4
 aiohttp
-cloudscraper
+curl_cffi
 flask

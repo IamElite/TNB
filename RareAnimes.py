@@ -6,7 +6,7 @@ import time
 import json
 import random
 import requests
-import cloudscraper
+from curl_cffi import requests as currequests
 import urllib.parse
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin
@@ -29,18 +29,9 @@ class RareAnimes:
         self.MAX_STEPS = 5
         self.STEP_DELAY = 1.0
 
-        s = cloudscraper.create_scraper(
-            browser={
-                'browser': 'chrome',
-                'platform': 'windows',
-                'desktop': True
-            },
-            delay=10
-        )
-        self.session = s
-        self.UA = s.headers.get('User-Agent', "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-        
-        self.session.headers.update({
+        # Use curl_cffi to perfectly impersonate a real browser TLS fingerprint
+        s = currequests.Session(impersonate="chrome")
+        s.headers.update({
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
             "Connection": "keep-alive",
@@ -50,6 +41,8 @@ class RareAnimes:
             "Sec-Fetch-Site": "none",
             "Sec-Fetch-User": "?1"
         })
+        self.session = s
+        self.UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         self.initialized = False
         self.last_mq_referer = None
 
