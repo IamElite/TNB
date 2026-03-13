@@ -23,7 +23,7 @@ QUALITY_REGEX = re.compile(r'(\d{3,4}p|SD|HD|FHD|4K|Ultra\s*HD)', re.I)
 
 class RareAnimes:
     def __init__(self):
-        self.ROOT_URL = "https://rareanimes.app/"
+        self.ROOT_URL = "https://codedew.com/"
         self.MQ_BASE_URL = "https://swift.multiquality.click/"
         self.UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         self.MAX_STEPS = 5
