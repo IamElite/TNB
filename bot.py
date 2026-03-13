@@ -104,20 +104,39 @@ async def progress_for_pyrogram(current, total, ud_type, message, start):
         except Exception:
             pass
 
+def get_binary_path(binary_name):
+    # Check if in PATH
+    if subprocess.run(["where" if os.name == "nt" else "which", binary_name], capture_output=True).returncode == 0:
+        return binary_name
+    
+    # Common Heroku / Linux paths
+    fallbacks = [
+        f"/app/vendor/ffmpeg/bin/{binary_name}",
+        f"/app/.apt/usr/bin/{binary_name}",
+        f"/usr/bin/{binary_name}",
+        f"/usr/local/bin/{binary_name}"
+    ]
+    for path in fallbacks:
+        if os.path.exists(path):
+            return path
+    return binary_name # Fallback to name and let it fail gracefully if not found
+
 async def is_ffmpeg_available():
     try:
+        bin_path = get_binary_path("ffmpeg")
         process = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-version", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            bin_path, "-version", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         await process.communicate()
         return process.returncode == 0
-    except FileNotFoundError:
+    except (FileNotFoundError, Exception):
         return False
 
 async def get_video_metadata(filepath):
     try:
+        bin_path = get_binary_path("ffprobe")
         cmd = [
-            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            bin_path, "-v", "error", "-select_streams", "v:0",
             "-show_entries", "stream=width,height,duration",
             "-of", "json", filepath
         ]
@@ -143,8 +162,9 @@ async def generate_thumbnail(filepath, duration):
     time_mark = max(int(duration * 0.15), min(10, duration // 2))
     
     try:
+        bin_path = get_binary_path("ffmpeg")
         cmd = [
-            "ffmpeg", "-v", "error", "-ss", str(time_mark),
+            bin_path, "-v", "error", "-ss", str(time_mark),
             "-i", filepath, "-vframes", "1", "-q:v", "2", thumb_path, "-y"
         ]
         process = await asyncio.create_subprocess_exec(
