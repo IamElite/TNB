@@ -20,6 +20,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("AnimeBot")
 
+# Global PATH fix for FFmpeg/FFprobe based on environment (Docker or Heroku)
+for p in ["/app/.apt/usr/bin", "/app/vendor/ffmpeg/bin", "/usr/bin"]:
+    if os.path.exists(p) and p not in os.environ["PATH"]:
+        os.environ["PATH"] += os.pathsep + p
+
 # Silence noisy libraries
 logging.getLogger("pyrogram").setLevel(logging.WARNING)
 logging.getLogger("werkzeug").setLevel(logging.ERROR) # For Flask
