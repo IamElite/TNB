@@ -96,7 +96,7 @@ async def progress_for_pyrogram(current, total, ud_type, message, start):
         except Exception:
             pass
 
-async def download_file(url, file_name, status_msg, referer=None):
+async def download_file(url, file_name, status_msg, referer=None, cookies=None):
     start_t = time.time()
     logger.info(f"Step 5: File download started -> {file_name}")
     headers = {"User-Agent": USER_AGENT}
@@ -104,8 +104,16 @@ async def download_file(url, file_name, status_msg, referer=None):
         headers["Referer"] = referer
         
     try:
-        async with aiohttp.ClientSession() as session:
+        jar = aiohttp.CookieJar(unsafe=True)
+        if cookies:
+            jar.update_cookies(cookies)
+            
+        async with aiohttp.ClientSession(cookie_jar=jar) as session:
             async with session.get(url, headers=headers, timeout=30) as response:
+                if response.status != 200:
+                    logger.error(f"Download failed with status {response.status}")
+                    return False
+                    
                 total_size = int(response.headers.get('content-length', 0))
                 downloaded = 0
                 last_update = time.time()
@@ -283,22 +291,30 @@ async def handle_rareanime(client, message, url, selection, status_msg):
                 logger.warning(f"No download link for episode: {ep.get('episode', 'Unknown')}")
                 continue
             
-            dl_url = downloads[0]
+            # Select the best quality (usually 1st is best, like 1080p)
+            dl_obj = downloads[0]
+            dl_url = dl_obj.get('link') if isinstance(dl_obj, dict) else dl_obj
+            
+            # Clean up the URL if needed
             if isinstance(dl_url, str) and ': http' in dl_url:
                 dl_url = 'http' + dl_url.split(': http')[1].strip()
-            elif isinstance(dl_url, dict) and 'link' in dl_url:
-                dl_url = dl_url['link']
-            elif isinstance(dl_url, dict) and 'url' in dl_url:
-                dl_url = dl_url['url']
+            
+            if not dl_url:
+                logger.warning(f"Empty download URL for episode: {ep.get('episode')}")
+                continue
                 
             file_name = f"rareanime_{message.id}_{idx}.mkv"
             logger.info(f"Step 4: Episode {idx} link extracted successfully.")
             await status_msg.edit(f"📥 **Downloading Ep {idx}/{total}...**\n{ep['episode']}")
             
-            # For RareAnimes (groovy.monster), MQ_BASE_URL is a good referer
-            mq_ref = "https://swift.multiquality.click/"
-            success = await download_file(dl_url, file_name, status_msg, referer=mq_ref)
-            if not success: continue
+            # Use metadata from RareAnimes result
+            ref = ep.get("referer")
+            cookies = ep.get("cookies")
+            
+            success = await download_file(dl_url, file_name, status_msg, referer=ref, cookies=cookies)
+            if not success: 
+                await status_msg.edit(f"❌ Failed to download: {ep['episode']}")
+                continue
             
             logger.info(f"Step 6: Upload to Telegram started -> {file_name}")
             await status_msg.edit(f"📤 **Uploading Ep {idx}/{total}...**")
