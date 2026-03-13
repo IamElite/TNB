@@ -308,45 +308,50 @@ async def handle_rareanime(client, message, url, selection, status_msg):
                 logger.warning(f"No download link for episode: {ep.get('episode', 'Unknown')}")
                 continue
             
-            # Select the best quality (usually 1st is best, like 1080p)
-            dl_obj = downloads[0]
-            dl_url = dl_obj.get('link') if isinstance(dl_obj, dict) else dl_obj
-            
-            # Clean up the URL if needed
-            if isinstance(dl_url, str) and ': http' in dl_url:
-                dl_url = 'http' + dl_url.split(': http')[1].strip()
-            
-            if not dl_url:
-                logger.warning(f"Empty download URL for episode: {ep.get('episode')}")
-                continue
+            # Loop through all available qualities
+            for q_idx, dl_obj in enumerate(downloads, 1):
+                dl_url = dl_obj.get('link') if isinstance(dl_obj, dict) else dl_obj
+                quality_label = dl_obj.get('label', f'Q{q_idx}') if isinstance(dl_obj, dict) else f'Q{q_idx}'
                 
-            file_name = f"rareanime_{message.id}_{idx}.mkv"
-            logger.info(f"Step 4: Episode {idx} link extracted successfully.")
-            await status_msg.edit(f"📥 **Downloading Ep {idx}/{total}...**\n{ep['episode']}")
-            
-            # Use metadata from RareAnimes result
-            ref = ep.get("referer")
-            cookies = ep.get("cookies")
-            user_agent = ep.get("user_agent")
-            
-            success = await download_file(dl_url, file_name, status_msg, referer=ref, cookies=cookies, user_agent=user_agent)
-            if not success: 
-                await status_msg.edit(f"❌ Failed to download: {ep['episode']}")
-                continue
-            
-            logger.info(f"Step 6: Upload to Telegram started -> {file_name}")
-            await status_msg.edit(f"📤 **Uploading Ep {idx}/{total}...**")
-            start_time = time.time()
-            
-            await client.send_document(
-                chat_id=message.chat.id,
-                document=file_name,
-                caption=f"{ep['episode']} via RareAnimes",
-                progress=progress_for_pyrogram,
-                progress_args=(f"📤 **Uploading Ep {idx}...**", status_msg, start_time)
-            )
-            os.remove(file_name)
-            logger.info(f"Step 7: Upload complete and file deleted -> {file_name}")
+                # Clean up the URL if needed
+                if isinstance(dl_url, str) and ': http' in dl_url:
+                    dl_url = 'http' + dl_url.split(': http')[1].strip()
+                
+                if not dl_url:
+                    logger.warning(f"Empty download URL for episode: {ep.get('episode')} - Quality: {quality_label}")
+                    continue
+                    
+                file_name = f"rareanime_{message.id}_{idx}_{quality_label}.mkv"
+                logger.info(f"Step 4: Episode {idx} ({quality_label}) link extracted successfully.")
+                await status_msg.edit(f"📥 **Downloading Ep {idx}/{total} [{quality_label}]...**\n{ep['episode']}")
+                
+                # Use metadata from RareAnimes result
+                ref = ep.get("referer")
+                cookies = ep.get("cookies")
+                user_agent = ep.get("user_agent")
+                
+                success = await download_file(dl_url, file_name, status_msg, referer=ref, cookies=cookies, user_agent=user_agent)
+                if not success: 
+                    await status_msg.edit(f"❌ Failed to download: {ep['episode']} [{quality_label}]")
+                    continue
+                
+                logger.info(f"Step 6: Upload to Telegram started -> {file_name}")
+                await status_msg.edit(f"📤 **Uploading Ep {idx}/{total} [{quality_label}]...**")
+                start_time = time.time()
+                
+                await client.send_document(
+                    chat_id=message.chat.id,
+                    document=file_name,
+                    caption=f"{ep['episode']} [{quality_label}] via RareAnimes",
+                    progress=progress_for_pyrogram,
+                    progress_args=(f"📤 **Uploading Ep {idx} [{quality_label}]...**", status_msg, start_time)
+                )
+                
+                try:
+                    os.remove(file_name)
+                    logger.info(f"Step 7: Upload complete and file deleted -> {file_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete file {file_name}: {e}")
             
         await status_msg.delete()
         logger.info("Process completed successfully for RareAnimes.")
