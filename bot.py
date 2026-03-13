@@ -4,9 +4,7 @@ import sys
 import time
 import math
 import asyncio
-import subprocess
 import json
-import shutil
 import aiohttp
 from contextlib import redirect_stdout
 from pyrogram import Client, filters
@@ -105,54 +103,10 @@ async def progress_for_pyrogram(current, total, ud_type, message, start):
         except Exception:
             pass
 
-def get_binary_path(binary_name):
-    # 1. Standard search in PATH using shutil.which
-    path = shutil.which(binary_name)
-    if path:
-        return path
-    
-    # 2. Aggressive fallback for Heroku/Docker/Linux environments
-    fallbacks = [
-        f"/app/.apt/usr/bin/{binary_name}",
-        f"/app/vendor/ffmpeg/bin/{binary_name}",
-        f"/app/vendor/ffmpeg/{binary_name}",
-        f"/usr/bin/{binary_name}",
-        f"/usr/local/bin/{binary_name}",
-        f".bin/{binary_name}",
-        f"bin/{binary_name}"
-    ]
-    for p in fallbacks:
-        if os.path.exists(p):
-            return p
-            
-    # Debug: If still not found, log some info to help locate it
-    logger.error(f"{binary_name} not found in PATH or standard fallbacks.")
-    logger.info(f"Current PATH: {os.environ.get('PATH')}")
-    try:
-        if os.path.exists("/app/.apt/usr/bin"):
-            logger.info(f"Files in /app/.apt/usr/bin: {os.listdir('/app/.apt/usr/bin')}")
-        if os.path.exists("/app/vendor/ffmpeg"):
-            logger.info(f"Files in /app/vendor/ffmpeg: {os.listdir('/app/vendor/ffmpeg')}")
-    except Exception: pass
-    
-    return binary_name # Final hope: let it try as-is
-
-async def is_ffmpeg_available():
-    try:
-        bin_path = get_binary_path("ffmpeg")
-        process = await asyncio.create_subprocess_exec(
-            bin_path, "-version", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        await process.communicate()
-        return process.returncode == 0
-    except (FileNotFoundError, Exception):
-        return False
-
 async def get_video_metadata(filepath):
     try:
-        bin_path = get_binary_path("ffprobe")
         cmd = [
-            bin_path, "-v", "error", "-select_streams", "v:0",
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
             "-show_entries", "stream=width,height,duration",
             "-of", "json", filepath
         ]
@@ -168,8 +122,8 @@ async def get_video_metadata(filepath):
         duration_str = stream.get("duration")
         duration = int(float(duration_str)) if duration_str else 0
         return width, height, duration
-    except (FileNotFoundError, Exception) as e:
-        logger.error(f"FFprobe error: {e}")
+    except Exception as e:
+        logger.error(f"Metadata error: {e}")
         return 0, 0, 0
 
 async def generate_thumbnail(filepath, duration):
@@ -178,9 +132,8 @@ async def generate_thumbnail(filepath, duration):
     time_mark = max(int(duration * 0.15), min(10, duration // 2))
     
     try:
-        bin_path = get_binary_path("ffmpeg")
         cmd = [
-            bin_path, "-v", "error", "-ss", str(time_mark),
+            "ffmpeg", "-v", "error", "-ss", str(time_mark),
             "-i", filepath, "-vframes", "1", "-q:v", "2", thumb_path, "-y"
         ]
         process = await asyncio.create_subprocess_exec(
@@ -189,8 +142,8 @@ async def generate_thumbnail(filepath, duration):
         await process.communicate()
         if os.path.exists(thumb_path):
             return thumb_path
-    except (FileNotFoundError, Exception) as e:
-        logger.error(f"FFmpeg thumbnail error: {e}")
+    except Exception as e:
+        logger.error(f"Thumbnail error: {e}")
     return None
 
 async def download_file(url, file_name, status_msg, referer=None, cookies=None, user_agent=None):
