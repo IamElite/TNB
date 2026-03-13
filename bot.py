@@ -4,6 +4,8 @@ import sys
 import time
 import math
 import asyncio
+import subprocess
+import json
 import aiohttp
 from contextlib import redirect_stdout
 from pyrogram import Client, filters
@@ -95,6 +97,48 @@ async def progress_for_pyrogram(current, total, ud_type, message, start):
             await message.edit(f"{ud_type}\n{tmp}")
         except Exception:
             pass
+
+async def get_video_metadata(filepath):
+    try:
+        cmd = [
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height,duration",
+            "-of", "json", filepath
+        ]
+        process = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await process.communicate()
+        data = json.loads(stdout)
+        
+        stream = data.get("streams", [{}])[0]
+        width = int(stream.get("width", 0)) if stream.get("width") else 0
+        height = int(stream.get("height", 0)) if stream.get("height") else 0
+        duration_str = stream.get("duration")
+        duration = int(float(duration_str)) if duration_str else 0
+        return width, height, duration
+    except Exception as e:
+        logger.error(f"FFprobe error: {e}")
+        return 0, 0, 0
+
+async def generate_thumbnail(filepath, duration):
+    thumb_path = f"{filepath}.jpg"
+    time_mark = max(int(duration * 0.15), min(10, duration // 2)) if duration > 0 else 5
+    
+    try:
+        cmd = [
+            "ffmpeg", "-v", "error", "-ss", str(time_mark),
+            "-i", filepath, "-vframes", "1", "-q:v", "2", thumb_path, "-y"
+        ]
+        process = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        await process.communicate()
+        if os.path.exists(thumb_path):
+            return thumb_path
+    except Exception as e:
+        logger.error(f"FFmpeg thumbnail error: {e}")
+    return None
 
 async def download_file(url, file_name, status_msg, referer=None, cookies=None, user_agent=None):
     start_t = time.time()
@@ -336,21 +380,32 @@ async def handle_rareanime(client, message, url, selection, status_msg):
                     continue
                 
                 logger.info(f"Step 6: Upload to Telegram started -> {file_name}")
+                await status_msg.edit(f"⚙️ **Extracting Metadata Ep {idx}/{total} [{quality_label}]...**")
+                
+                width, height, duration = await get_video_metadata(file_name)
+                thumb_path = await generate_thumbnail(file_name, duration)
+                
                 await status_msg.edit(f"📤 **Uploading Ep {idx}/{total} [{quality_label}]...**")
                 start_time = time.time()
                 await client.send_video(
                     chat_id=message.chat.id,
                     video=file_name,
                     caption=f"{ep['episode']} [{quality_label}] via RareAnimes",
+                    duration=duration,
+                    width=width,
+                    height=height,
+                    thumb=thumb_path,
                     progress=progress_for_pyrogram,
                     progress_args=(f"📤 **Uploading Ep {idx} [{quality_label}]...**", status_msg, start_time)
                 )
                 
                 try:
                     os.remove(file_name)
-                    logger.info(f"Step 7: Upload complete and file deleted -> {file_name}")
+                    if thumb_path and os.path.exists(thumb_path):
+                        os.remove(thumb_path)
+                    logger.info(f"Step 7: Upload complete and files deleted -> {file_name}")
                 except Exception as e:
-                    logger.warning(f"Failed to delete file {file_name}: {e}")
+                    logger.warning(f"Failed to delete files for {file_name}: {e}")
             
         await status_msg.delete()
         logger.info("Process completed successfully for RareAnimes.")
