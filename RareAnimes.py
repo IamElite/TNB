@@ -136,9 +136,13 @@ class RareAnimes:
         return groups
 
     def _try_mirrors(self, mirrors):
-        for m in mirrors:
+        logger.info(f"    [*] Trying {len(mirrors)} mirrors...")
+        for i, m in enumerate(mirrors, 1):
+            logger.info(f"    [*] Mirror {i}: {m['url'][:60]}...")
             links = self.process_zipper(m["url"], m["referer"])
-            if links: return links
+            if links: 
+                logger.info(f"    [+] Success with mirror {i}")
+                return links
         return None
 
     def _print_qualities(self, links):
@@ -256,19 +260,26 @@ class RareAnimes:
             cur_url, cur_ref = url, referer
             for step in range(1, self.MAX_STEPS + 1):
                 headers = {"Referer": cur_ref}
+                logger.info(f"      [#] Step {step}: Requesting {cur_url[:60]}...")
                 
                 resp = None
                 for attempt in range(2):
                     try:
                         resp = self.session.get(cur_url, headers=headers, timeout=15)
-                        if resp.status_code != 403:
+                        if resp.status_code == 200:
                             break
-                        # If 403, maybe challenge. Wait a bit more.
+                        if resp.status_code == 403:
+                            logger.warning(f"      [!] 403 Forbidden at step {step} (Attempt {attempt+1})")
+                        else:
+                            logger.warning(f"      [!] Status {resp.status_code} at step {step}")
                         time.sleep(2)
-                    except Exception:
+                    except Exception as e:
+                        logger.error(f"      [!] Request error: {e}")
                         if attempt == 1: raise
                 
-                if not resp: return None
+                if not resp or resp.status_code != 200: 
+                    logger.warning(f"      [!] Failed at step {step}. Status: {resp.status_code if resp else 'No Resp'}")
+                    return None
 
                 token = re.search(r'name="rtiwatch"\s+value="([^"]+)"', resp.text)
                 if token and token.group(1) != "notranslate":
