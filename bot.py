@@ -11,13 +11,19 @@ from contextlib import redirect_stdout
 from pyrogram import Client, filters
 from pyrogram.types import Message
 import logging
+from flask import Flask
+from threading import Thread
 
 logging.basicConfig(
     level=logging.INFO,
-    format='[%(asctime)s] %(levelname)-5s | %(message)s',
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger("AnimeBot")
+
+# Silence noisy libraries
+logging.getLogger("pyrogram").setLevel(logging.WARNING)
+logging.getLogger("werkzeug").setLevel(logging.ERROR) # For Flask
 
 # Import your custom modules
 from HindiAnimeZone import HindiAnimeZone
@@ -414,6 +420,26 @@ async def handle_rareanime(client, message, url, selection, status_msg):
         logger.error(f"RareAnimes Error: {e}", exc_info=True)
         await status_msg.edit(f"❌ RareAnimes Error: {str(e)}")
 
+
+# Flask app for health check
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+@flask_app.route('/health')
+def health_check():
+    return "Bot is running!", 200
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8000))
+    print(f"Flask health check server starting on port {port}...")
+    flask_app.run(host='0.0.0.0', port=port)
+
 if __name__ == "__main__":
-    print("Starting bot...")
+    print("-" * 30)
+    print("🚀 ANIME BOT STARTING...")
+    print("-" * 30)
+    Thread(target=run_flask, daemon=True).start()
+    print("✅ Health Check Server: OK")
+    print("✅ Telegram Bot: STARTING...")
+    print("-" * 30)
     app.run()
