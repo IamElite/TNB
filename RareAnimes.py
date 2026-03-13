@@ -29,19 +29,27 @@ class RareAnimes:
         self.MAX_STEPS = 5
         self.STEP_DELAY = 1.0
 
-        # Replace standard session with cloudscraper to bypass CF/bot checks
-        s = cloudscraper.create_scraper(browser={
-            'browser': 'chrome',
-            'platform': 'windows',
-            'desktop': True
-        })
-        s.headers.update({
+        s = cloudscraper.create_scraper(
+            browser={
+                'browser': 'chrome',
+                'platform': 'windows',
+                'desktop': True
+            },
+            delay=10
+        )
+        self.session = s
+        self.UA = s.headers.get('User-Agent', "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+        
+        self.session.headers.update({
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1"
         })
-        self.session = s
         self.initialized = False
         self.last_mq_referer = None
 
@@ -49,13 +57,13 @@ class RareAnimes:
         if self.initialized: return
         logger.info("[*] Initializing session...")
         try:
+            # Just hit the home page to get early cookies/tokens
+            self.session.get("https://rareanimes.app/", timeout=10)
             self.session.get(self.ROOT_URL, timeout=10)
-            if "zipper_client_id" not in self.session.cookies:
-                self.session.cookies.set("zipper_client_id",
-                    "".join(random.choices("0123456789abcdef", k=16)), domain="codedew.com")
             self.initialized = True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[*] Session init warning: {e}")
+            self.initialized = True # Proceed anyway
 
     def get_session_cookies(self):
         return self.session.cookies.get_dict()
@@ -248,7 +256,19 @@ class RareAnimes:
             cur_url, cur_ref = url, referer
             for step in range(1, self.MAX_STEPS + 1):
                 headers = {"Referer": cur_ref}
-                resp = self.session.get(cur_url, headers=headers, timeout=15)
+                
+                resp = None
+                for attempt in range(2):
+                    try:
+                        resp = self.session.get(cur_url, headers=headers, timeout=15)
+                        if resp.status_code != 403:
+                            break
+                        # If 403, maybe challenge. Wait a bit more.
+                        time.sleep(2)
+                    except Exception:
+                        if attempt == 1: raise
+                
+                if not resp: return None
 
                 token = re.search(r'name="rtiwatch"\s+value="([^"]+)"', resp.text)
                 if token and token.group(1) != "notranslate":
