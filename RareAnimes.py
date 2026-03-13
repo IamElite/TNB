@@ -1,7 +1,14 @@
-import sys, io, os, json, random, re, time, logging
+import os
+import re
+import time
+import json
+import random
 import requests
+import cloudscraper
+import urllib.parse
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, unquote
+from urllib.parse import urlparse, urljoin
+import logging
 
 if sys.stdout.encoding.lower() != 'utf-8':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -13,16 +20,20 @@ QUALITY_REGEX = re.compile(r'(\d{3,4}p|SD|HD|FHD|4K|Ultra\s*HD)', re.I)
 
 
 class RareAnimes:
-    ROOT_URL = "https://codedew.com/"
-    MQ_BASE_URL = "https://swift.multiquality.click/"
-    MAX_STEPS = 10
-    STEP_DELAY = 1.0
-    UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-
     def __init__(self):
-        s = requests.Session()
+        self.ROOT_URL = "https://rareanimes.app/"
+        self.MQ_BASE_URL = "https://swift.multiquality.click/"
+        self.UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        self.MAX_STEPS = 5
+        self.STEP_DELAY = 1.0
+
+        # Replace standard session with cloudscraper to bypass CF/bot checks
+        s = cloudscraper.create_scraper(browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        })
         s.headers.update({
-            "User-Agent": self.UA,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
             "Connection": "keep-alive",
