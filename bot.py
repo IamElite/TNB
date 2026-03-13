@@ -338,10 +338,9 @@ async def handle_rareanime(client, message, url, selection, status_msg):
                 logger.info(f"Step 6: Upload to Telegram started -> {file_name}")
                 await status_msg.edit(f"📤 **Uploading Ep {idx}/{total} [{quality_label}]...**")
                 start_time = time.time()
-                
-                await client.send_document(
+                await client.send_video(
                     chat_id=message.chat.id,
-                    document=file_name,
+                    video=file_name,
                     caption=f"{ep['episode']} [{quality_label}] via RareAnimes",
                     progress=progress_for_pyrogram,
                     progress_args=(f"📤 **Uploading Ep {idx} [{quality_label}]...**", status_msg, start_time)
