@@ -96,10 +96,10 @@ async def progress_for_pyrogram(current, total, ud_type, message, start):
         except Exception:
             pass
 
-async def download_file(url, file_name, status_msg, referer=None, cookies=None):
+async def download_file(url, file_name, status_msg, referer=None, cookies=None, user_agent=None):
     start_t = time.time()
     logger.info(f"Step 5: File download started -> {file_name}")
-    headers = {"User-Agent": USER_AGENT}
+    headers = {"User-Agent": user_agent or USER_AGENT}
     if referer:
         headers["Referer"] = referer
         
@@ -310,8 +310,9 @@ async def handle_rareanime(client, message, url, selection, status_msg):
             # Use metadata from RareAnimes result
             ref = ep.get("referer")
             cookies = ep.get("cookies")
+            user_agent = ep.get("user_agent")
             
-            success = await download_file(dl_url, file_name, status_msg, referer=ref, cookies=cookies)
+            success = await download_file(dl_url, file_name, status_msg, referer=ref, cookies=cookies, user_agent=user_agent)
             if not success: 
                 await status_msg.edit(f"❌ Failed to download: {ep['episode']}")
                 continue

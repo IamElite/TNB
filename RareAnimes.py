@@ -105,7 +105,8 @@ class RareAnimes:
                     "episode": label, 
                     "url": mirrors[0]["url"], 
                     "referer": self.last_mq_referer,
-                    "cookies": self.get_session_cookies()
+                    "cookies": self.get_session_cookies(),
+                    "user_agent": self.session.headers.get("User-Agent")
                 }
                 if links and isinstance(links, list):
                     entry["downloads"] = links
@@ -289,7 +290,7 @@ class RareAnimes:
 
     def process_multiquality(self, downlead_url):
         try:
-            hdrs = {"User-Agent": self.UA, "Referer": self.ROOT_URL}
+            hdrs = {"Referer": self.ROOT_URL}
             resp = self.session.get(downlead_url, headers=hdrs, timeout=15)
             jd = self._extract_juicy_data(resp.text)
             if not jd: 
