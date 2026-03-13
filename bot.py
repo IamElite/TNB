@@ -104,6 +104,16 @@ async def progress_for_pyrogram(current, total, ud_type, message, start):
         except Exception:
             pass
 
+async def is_ffmpeg_available():
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-version", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        await process.communicate()
+        return process.returncode == 0
+    except FileNotFoundError:
+        return False
+
 async def get_video_metadata(filepath):
     try:
         cmd = [
@@ -123,13 +133,14 @@ async def get_video_metadata(filepath):
         duration_str = stream.get("duration")
         duration = int(float(duration_str)) if duration_str else 0
         return width, height, duration
-    except Exception as e:
+    except (FileNotFoundError, Exception) as e:
         logger.error(f"FFprobe error: {e}")
         return 0, 0, 0
 
 async def generate_thumbnail(filepath, duration):
+    if duration <= 0: duration = 5
     thumb_path = f"{filepath}.jpg"
-    time_mark = max(int(duration * 0.15), min(10, duration // 2)) if duration > 0 else 5
+    time_mark = max(int(duration * 0.15), min(10, duration // 2))
     
     try:
         cmd = [
@@ -142,7 +153,7 @@ async def generate_thumbnail(filepath, duration):
         await process.communicate()
         if os.path.exists(thumb_path):
             return thumb_path
-    except Exception as e:
+    except (FileNotFoundError, Exception) as e:
         logger.error(f"FFmpeg thumbnail error: {e}")
     return None
 
