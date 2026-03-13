@@ -245,7 +245,8 @@ class RareAnimes:
                 soup = BeautifulSoup(resp.text, "html.parser")
                 nxt = self._find_next_step(soup, cur_url)
                 if not nxt: 
-                    logger.warning(f"    [!] Dead end at step {step} for {cur_url}")
+                    logger.warning(f"    [!] Dead end at step {step} for {cur_url}. Status: {resp.status_code}")
+                    logger.warning(f"    [!] HTML Snippet: {resp.text[:500]}")
                     return None
                 cur_ref, cur_url = cur_url, nxt
                 time.sleep(self.STEP_DELAY)
