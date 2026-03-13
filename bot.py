@@ -6,6 +6,7 @@ import math
 import asyncio
 import subprocess
 import json
+import shutil
 import aiohttp
 from contextlib import redirect_stdout
 from pyrogram import Client, filters
@@ -105,21 +106,36 @@ async def progress_for_pyrogram(current, total, ud_type, message, start):
             pass
 
 def get_binary_path(binary_name):
-    # Check if in PATH
-    if subprocess.run(["where" if os.name == "nt" else "which", binary_name], capture_output=True).returncode == 0:
-        return binary_name
+    # 1. Standard search in PATH using shutil.which
+    path = shutil.which(binary_name)
+    if path:
+        return path
     
-    # Common Heroku / Linux paths
+    # 2. Aggressive fallback for Heroku/Docker/Linux environments
     fallbacks = [
-        f"/app/vendor/ffmpeg/bin/{binary_name}",
         f"/app/.apt/usr/bin/{binary_name}",
+        f"/app/vendor/ffmpeg/bin/{binary_name}",
+        f"/app/vendor/ffmpeg/{binary_name}",
         f"/usr/bin/{binary_name}",
-        f"/usr/local/bin/{binary_name}"
+        f"/usr/local/bin/{binary_name}",
+        f".bin/{binary_name}",
+        f"bin/{binary_name}"
     ]
-    for path in fallbacks:
-        if os.path.exists(path):
-            return path
-    return binary_name # Fallback to name and let it fail gracefully if not found
+    for p in fallbacks:
+        if os.path.exists(p):
+            return p
+            
+    # Debug: If still not found, log some info to help locate it
+    logger.error(f"{binary_name} not found in PATH or standard fallbacks.")
+    logger.info(f"Current PATH: {os.environ.get('PATH')}")
+    try:
+        if os.path.exists("/app/.apt/usr/bin"):
+            logger.info(f"Files in /app/.apt/usr/bin: {os.listdir('/app/.apt/usr/bin')}")
+        if os.path.exists("/app/vendor/ffmpeg"):
+            logger.info(f"Files in /app/vendor/ffmpeg: {os.listdir('/app/vendor/ffmpeg')}")
+    except Exception: pass
+    
+    return binary_name # Final hope: let it try as-is
 
 async def is_ffmpeg_available():
     try:
