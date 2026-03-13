@@ -168,17 +168,17 @@ async def download_file(url, file_name, status_msg, referer=None, cookies=None, 
                     if referer:
                         headers["Referer"] = referer
                     
-                    with s.get(url, headers=headers, stream=True, timeout=60) as r:
-                        if r.status_code != 200:
-                            state["error"] = f"HTTP {r.status_code}"
-                            return
-                        
-                        state["total"] = int(r.headers.get('content-length', 0))
-                        with open(file_name, 'wb') as f:
-                            for chunk in r.iter_content(chunk_size=1024 * 1024):
-                                if chunk:
-                                    f.write(chunk)
-                                    state["downloaded"] += len(chunk)
+                r = s.get(url, headers=headers, stream=True, timeout=60)
+                if r.status_code != 200:
+                    state["error"] = f"HTTP {r.status_code}"
+                    return
+                
+                state["total"] = int(r.headers.get('content-length', 0))
+                with open(file_name, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            f.write(chunk)
+                            state["downloaded"] += len(chunk)
             except Exception as e:
                 state["error"] = str(e)
             finally:
