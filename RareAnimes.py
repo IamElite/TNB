@@ -244,11 +244,14 @@ class RareAnimes:
 
                 soup = BeautifulSoup(resp.text, "html.parser")
                 nxt = self._find_next_step(soup, cur_url)
-                if not nxt: return None
+                if not nxt: 
+                    logger.warning(f"    [!] Dead end at step {step} for {cur_url}")
+                    return None
                 cur_ref, cur_url = cur_url, nxt
                 time.sleep(self.STEP_DELAY)
-        except Exception:
-            pass
+            logger.warning(f"    [!] Exceeded {self.MAX_STEPS} steps.")
+        except Exception as e:
+            logger.error(f"    [!] Zipper error: {e}", exc_info=False)
         return None
 
     def _find_next_step(self, soup, current_url):
@@ -275,12 +278,16 @@ class RareAnimes:
             hdrs = {"User-Agent": self.UA, "Referer": self.ROOT_URL}
             resp = self.session.get(downlead_url, headers=hdrs, timeout=15)
             jd = self._extract_juicy_data(resp.text)
-            if not jd: return None
+            if not jd: 
+                logger.error("    [!] juicyData not found")
+                return None
 
             token = jd.get("token")
             links_route = jd.get("routes", {}).get("links")
             ping_route = jd.get("routes", {}).get("ping")
-            if not token or not links_route: return None
+            if not token or not links_route: 
+                logger.error("    [!] Token/route missing")
+                return None
 
             if ping_route:
                 self.session.post(urljoin(self.MQ_BASE_URL, ping_route), headers=hdrs, timeout=10)
@@ -293,7 +300,9 @@ class RareAnimes:
                          "Origin": self.MQ_BASE_URL.rstrip("/")},
                 json={"captcha": None, "_token": token}, timeout=15)
 
-            if api_resp.status_code != 200: return None
+            if api_resp.status_code != 200: 
+                logger.error(f"    [!] API error {api_resp.status_code}: {api_resp.text[:100]}")
+                return None
 
             data = api_resp.json()
             quals = data.get("qualities", [])
@@ -306,8 +315,10 @@ class RareAnimes:
                         lbl = self._quality_from_text(title) or self._quality_from_text(q.get("link","")) or "N/A"
                     result.append({"label": lbl, "size": q.get("size"), "link": q.get("link")})
                 return result
-        except Exception:
-            pass
+            else:
+                logger.warning(f"    [!] No qualities. Msg: {data.get('message')}")
+        except Exception as e:
+            logger.error(f"    [!] MQ error: {e}", exc_info=False)
         return None
 
     def _extract_title(self, html):
@@ -332,7 +343,8 @@ class RareAnimes:
         try:
             parsed = json.loads(html[start:end])
             return parsed.get("data", parsed)
-        except Exception:
+        except Exception as e:
+            logger.error(f"    [!] juicyData parse error: {e}", exc_info=False)
             return None
 
 
