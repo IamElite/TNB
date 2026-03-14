@@ -178,6 +178,15 @@ class RareAnimes:
             seen_hrefs.add(href)
             
             label = self._get_episode_label(tag)
+            # Add language context if found in text or parent
+            parent_text = tag.parent.get_text(" ", strip=True) if tag.parent else ""
+            if "hindi" in text_low or "hindi" in parent_text.lower():
+                label = f"{label} (Hindi)"
+            elif "tamil" in text_low or "tamil" in parent_text.lower():
+                label = f"{label} (Tamil)"
+            elif "telegu" in text_low or "telegu" in parent_text.lower():
+                label = f"{label} (Telegu)"
+                
             raw_list.append({"url": href, "referer": referer, "label": label, "is_hub": is_hub})
 
         # 2. Extract HUB links
@@ -189,20 +198,20 @@ class RareAnimes:
             else:
                 final_list.append(item)
 
+        # 3. Deduplicate and clean
+        # Instead of just numbers, we group by label to preserve language distinction
         processed = {}
         for item in final_list:
             lbl = item["label"]
-            match = re.search(r'(\d+)', lbl)
-            num = int(match.group(1)) if match else lbl
-            
-            if num not in processed:
-                processed[num] = item
-            else:
-                if len(lbl) > len(processed[num]["label"]):
-                    processed[num] = item
+            if lbl not in processed:
+                processed[lbl] = item
         
-        sorted_keys = sorted(processed.keys(), key=lambda x: x if isinstance(x, int) else 9999)
-        return [processed[k] for k in sorted_keys]
+        # Sort labels naturally
+        def natural_sort_key(s):
+            return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', s)]
+            
+        sorted_labels = sorted(processed.keys(), key=natural_sort_key)
+        return [processed[k] for k in sorted_labels]
 
     def _extract_links_from_hub(self, hub_url, referer):
         try:
@@ -229,18 +238,43 @@ class RareAnimes:
             return []
 
     def _get_episode_label(self, tag):
+        # 1. Check tag text itself
         text = tag.get_text(strip=True)
-        if len(text) > 3 and any(kw in text.lower() for kw in ["episode","ep ","mov","spec"]):
-            m = EP_REGEX.search(text)
-            if m: return m.group(1).title()
+        m = EP_REGEX.search(text)
+        if m: return m.group(1).title()
 
+        # 2. Check parent text
         curr = tag.parent
-        for _ in range(5):
+        if curr:
+            p_text = curr.get_text(" ", strip=True)
+            m = EP_REGEX.search(p_text)
+            if m and len(p_text) < 100: return m.group(1).title()
+
+        # 3. Sibling Traversal (Crucial for RareAnimes structure)
+        # Look for the nearest previous sibling that has an episode number
+        if curr:
+            prev = curr.find_previous_sibling()
+            count = 0
+            while prev and count < 10:
+                prev_text = prev.get_text(" ", strip=True)
+                m = EP_REGEX.search(prev_text)
+                if m: return m.group(1).title()
+                # If we hit another block of links (e.g. another Mega link), stop to avoid mislabeling
+                if prev.find("a", href=True, string=re.compile(r"Mega|Drive|Mirror", re.I)):
+                    break
+                prev = prev.find_previous_sibling()
+                count += 1
+
+        # 4. Fallback: Search higher up
+        curr = tag.parent
+        for _ in range(3):
             if not curr: break
-            p = curr.get_text(" ", strip=True)
-            m = EP_REGEX.search(p)
-            if m and len(p) < 200: return m.group(1).title()
+            prev_all = curr.find_all_previous(string=EP_REGEX, limit=1)
+            if prev_all:
+                m = EP_REGEX.search(prev_all[0])
+                if m: return m.group(1).title()
             curr = curr.parent
+
         return "Episode/Download"
 
     def process_zipper(self, url, referer):
