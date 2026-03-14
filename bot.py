@@ -9,6 +9,7 @@ from curl_cffi import requests as currequests
 from contextlib import redirect_stdout
 from pyrogram import Client, filters
 from pyrogram.types import Message
+from pyrogram.errors import MessageNotModified, FloodWait
 import logging
 from flask import Flask
 from threading import Thread
@@ -30,6 +31,21 @@ logging.getLogger("pyrogram").setLevel(logging.WARNING)
 logging.getLogger("werkzeug").setLevel(logging.ERROR) # For Flask
 
 # Import your custom modules
+# Helper for safe message edits
+async def safe_edit(message: Message, text: str, **kwargs):
+    try:
+        await message.edit(text, **kwargs)
+    except MessageNotModified:
+        pass
+    except FloodWait as e:
+        logger.warning(f"FloodWait hit: Waiting {e.value} seconds...")
+        await asyncio.sleep(e.value)
+        try:
+            await message.edit(text, **kwargs)
+        except Exception: pass
+    except Exception as e:
+        logger.error(f"Safe edit failed: {e}")
+
 from HindiAnimeZone import HindiAnimeZone
 from RareAnimes import RareAnimes
 
@@ -217,28 +233,27 @@ async def download_file(url, file_name, status_msg, referer=None, cookies=None, 
         while not state["done"]:
             await asyncio.sleep(2)
             now = time.time()
-            if now - last_update > 5 and state["total"] > 0:
+            if now - last_update > 7 and state["total"] > 0: # Increased to 7s
                 last_update = now
                 percentage = state["downloaded"] * 100 / state["total"] if state["total"] else 0
-                try:
-                    await status_msg.edit(
-                        f"📥 **Downloading...** {round(percentage, 2)}%\n"
-                        f"{humanbytes(state['downloaded'])} / {humanbytes(state['total'])}"
-                    )
-                except Exception: pass
+                await safe_edit(
+                    status_msg,
+                    f"📥 **Downloading...** {round(percentage, 2)}%\n"
+                    f"{humanbytes(state['downloaded'])} / {humanbytes(state['total'])}"
+                )
                 
         await task  # Wait for executor thread to finish
         
         if state["error"]:
             logger.error(f"Download failed: {state['error']}")
-            await status_msg.edit(f"❌ Download failed: {state['error']}")
+            await safe_edit(status_msg, f"❌ Download failed: {state['error']}")
             return False
             
         logger.info(f"Step 5: File download complete -> {file_name}")
         return True
     except Exception as e:
         logger.error(f"Step 5: Download error -> {str(e)}", exc_info=True)
-        await status_msg.edit(f"❌ Download failed: {str(e)}")
+        await safe_edit(status_msg, f"❌ Download failed: {str(e)}")
         return False
 
 def parse_selection(args):
@@ -373,16 +388,16 @@ async def handle_rareanime(client, message, url, selection, status_msg):
         
         if "error" in res and not res.get("episodes"):
             logger.error(f"Step 3 Failed: RareAnimes API Error: {res.get('error')}")
-            return await status_msg.edit(f"❌ API fail: {res.get('error')}")
+            return await safe_edit(status_msg, f"❌ API fail: {res.get('error')}")
             
         episodes = res.get("episodes", [])
         if not episodes:
             logger.warning("Step 4 Failed: No episodes returned.")
-            return await status_msg.edit("❌ Koi episodes nahi mile.")
+            return await safe_edit(status_msg, "❌ Koi episodes nahi mile.")
             
         total = len(episodes)
         logger.info(f"Step 4: Found {total} episodes to process.")
-        await status_msg.edit(f"✅ Found {total} episodes. Downloading and uploading...")
+        await safe_edit(status_msg, f"✅ Found {total} episodes. Downloading and uploading...")
         
         for idx, ep in enumerate(episodes, 1):
             downloads = ep.get("downloads", [])
@@ -405,7 +420,7 @@ async def handle_rareanime(client, message, url, selection, status_msg):
                     
                 file_name = f"rareanime_{message.id}_{idx}_{quality_label}.mkv"
                 logger.info(f"Step 4: Episode {idx} ({quality_label}) link extracted successfully.")
-                await status_msg.edit(f"📥 **Downloading Ep {idx}/{total} [{quality_label}]...**\n{ep['episode']}")
+                await safe_edit(status_msg, f"📥 **Downloading Ep {idx}/{total} [{quality_label}]...**\n{ep['episode']}")
                 
                 # Use metadata from RareAnimes result if available
                 metadata = dl_obj.get('metadata', {}) if isinstance(dl_obj, dict) else {}
@@ -415,16 +430,16 @@ async def handle_rareanime(client, message, url, selection, status_msg):
                 
                 success = await download_file(dl_url, file_name, status_msg, referer=ref, cookies=cookies, user_agent=ua)
                 if not success: 
-                    await status_msg.edit(f"❌ Failed to download: {ep['episode']} [{quality_label}]")
+                    await safe_edit(status_msg, f"❌ Failed to download: {ep['episode']} [{quality_label}]")
                     continue
                 
                 logger.info(f"Step 6: Upload to Telegram started -> {file_name}")
-                await status_msg.edit(f"⚙️ **Extracting Metadata Ep {idx}/{total} [{quality_label}]...**")
+                await safe_edit(status_msg, f"⚙️ **Extracting Metadata Ep {idx}/{total} [{quality_label}]...**")
                 
                 width, height, duration = await get_video_metadata(file_name)
                 thumb_path = await generate_thumbnail(file_name, duration)
                 
-                await status_msg.edit(f"📤 **Uploading Ep {idx}/{total} [{quality_label}]...**")
+                await safe_edit(status_msg, f"📤 **Uploading Ep {idx}/{total} [{quality_label}]...**")
                 start_time = time.time()
                 await client.send_video(
                     chat_id=message.chat.id,
