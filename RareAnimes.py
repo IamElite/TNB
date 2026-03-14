@@ -360,14 +360,27 @@ class RareAnimes:
                 return None
 
             if ping_route:
-                self.session.post(urljoin(self.MQ_BASE_URL, ping_route), headers=hdrs, timeout=10)
+                ping_headers = {
+                    "Referer": downlead_url,
+                    "Sec-Fetch-Site": "same-origin",
+                    "Sec-Fetch-Mode": "no-cors",
+                    "Sec-Fetch-Dest": "empty"
+                }
+                self.session.post(urljoin(self.MQ_BASE_URL, ping_route), headers=ping_headers, timeout=10)
             time.sleep(1.0)
 
             api_resp = self.session.post(
                 urljoin(self.MQ_BASE_URL, links_route),
-                headers={"Referer": downlead_url, "X-Requested-With": "XMLHttpRequest",
-                         "Accept": "application/json", "Content-Type": "application/json",
-                         "Origin": self.MQ_BASE_URL.rstrip("/")},
+                headers={
+                    "Referer": downlead_url, 
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Accept": "application/json", 
+                    "Content-Type": "application/json",
+                    "Origin": self.MQ_BASE_URL.rstrip("/"),
+                    "Sec-Fetch-Site": "same-origin",
+                    "Sec-Fetch-Mode": "cors",
+                    "Sec-Fetch-Dest": "empty"
+                },
                 json={"captcha": None, "_token": token}, timeout=15)
 
             if api_resp.status_code != 200: 
