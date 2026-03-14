@@ -161,23 +161,37 @@ async def download_file(url, file_name, status_msg, referer=None, cookies=None, 
         def sync_download():
             try:
                 import cloudscraper
-                scraper = cloudscraper.create_scraper()
+                # Create a more robust scraper with browser fingerprint
+                scraper = cloudscraper.create_scraper(
+                    browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
+                )
                 
-                headers = {"User-Agent": user_agent or USER_AGENT}
+                headers = {
+                    "User-Agent": user_agent or USER_AGENT,
+                    "Accept": "*/*",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Connection": "keep-alive"
+                }
                 if referer:
                     headers["Referer"] = referer
                 
-                logger.info(f"[*] Downloading using cloudscraper: {url[:60]}...")
+                logger.info(f"[*] Downloading with cloudscraper: {url[:60]}...")
+                
+                # Attempt 1: With cookies
                 r = scraper.get(url, headers=headers, cookies=cookies, stream=True, timeout=60, allow_redirects=True)
                 
-                if r.status_code != 200:
-                    # Last fallback to curl_cffi if cloudscraper fails
-                    logger.warning(f"Cloudscraper got {r.status_code}, trying curl_cffi...")
-                    with currequests.Session(impersonate="chrome") as s:
-                        if cookies:
-                            s.cookies.update(cookies)
-                        r = s.get(url, headers=headers, stream=True, timeout=60)
+                # Attempt 2: Without cookies (often fixes 403 on direct links)
+                if r.status_code == 403:
+                    logger.warning("Attempt 1 failed (403). Retrying without cookies...")
+                    r = scraper.get(url, headers=headers, stream=True, timeout=60, allow_redirects=True)
                 
+                # Attempt 3: Without referer
+                if r.status_code == 403 and referer:
+                    logger.warning("Attempt 2 failed (403). Retrying without referer...")
+                    temp_headers = headers.copy()
+                    temp_headers.pop("Referer", None)
+                    r = scraper.get(url, headers=temp_headers, stream=True, timeout=60, allow_redirects=True)
+
                 if r.status_code != 200:
                     state["error"] = f"HTTP {r.status_code}"
                     return
