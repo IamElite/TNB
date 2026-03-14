@@ -346,13 +346,28 @@ class RareAnimes:
             data = api_resp.json()
             quals = data.get("qualities", [])
             if data.get("success") and quals:
+                # Capture session state for the caller
+                metadata = {
+                    "cookies": self.session.cookies.get_dict(),
+                    "referer": downlead_url,
+                    "user_agent": self.UA
+                }
+                
                 result = []
                 for q in quals:
                     lbl = q.get("label") or q.get("quality")
                     if not lbl or lbl == "N/A":
                         title = self._extract_title(resp.text)
                         lbl = self._quality_from_text(title) or self._quality_from_text(q.get("link","")) or "N/A"
-                    result.append({"label": lbl, "size": q.get("size"), "link": q.get("link")})
+                    
+                    link = q.get("link")
+                    # Append metadata to each link object for easier use in bot.py
+                    result.append({
+                        "label": lbl, 
+                        "size": q.get("size"), 
+                        "link": link,
+                        "metadata": metadata
+                    })
                 return result
             else:
                 logger.warning(f"    [!] No qualities. Msg: {data.get('message')}")

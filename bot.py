@@ -401,12 +401,13 @@ async def handle_rareanime(client, message, url, selection, status_msg):
                 logger.info(f"Step 4: Episode {idx} ({quality_label}) link extracted successfully.")
                 await status_msg.edit(f"📥 **Downloading Ep {idx}/{total} [{quality_label}]...**\n{ep['episode']}")
                 
-                # Use metadata from RareAnimes result
-                ref = ep.get("referer")
-                cookies = ep.get("cookies")
-                user_agent = ep.get("user_agent")
+                # Use metadata from RareAnimes result if available
+                metadata = dl_obj.get('metadata', {}) if isinstance(dl_obj, dict) else {}
+                ref = metadata.get("referer") or ep.get("referer")
+                cookies = metadata.get("cookies") or ep.get("cookies")
+                ua = metadata.get("user_agent") or ep.get("user_agent")
                 
-                success = await download_file(dl_url, file_name, status_msg, referer=ref, cookies=cookies, user_agent=user_agent)
+                success = await download_file(dl_url, file_name, status_msg, referer=ref, cookies=cookies, user_agent=ua)
                 if not success: 
                     await status_msg.edit(f"❌ Failed to download: {ep['episode']} [{quality_label}]")
                     continue
