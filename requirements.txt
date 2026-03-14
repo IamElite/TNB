@@ -5,5 +5,3 @@ beautifulsoup4
 aiohttp
 curl_cffi
 flask
-cloudscraper
-requests-toolbelt

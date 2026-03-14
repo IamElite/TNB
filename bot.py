@@ -160,11 +160,8 @@ async def download_file(url, file_name, status_msg, referer=None, cookies=None, 
         
         def sync_download():
             try:
-                import cloudscraper
-                # Use firefox fingerprint as seen in successful browser logs
-                scraper = cloudscraper.create_scraper(
-                    browser={'browser': 'firefox', 'platform': 'windows', 'mobile': False}
-                )
+                # Use curl_cffi for perfect impersonation and session handling
+                session = currequests.Session(impersonate="chrome110")
                 
                 headers = {
                     "User-Agent": user_agent or USER_AGENT,
@@ -172,35 +169,25 @@ async def download_file(url, file_name, status_msg, referer=None, cookies=None, 
                     "Accept-Language": "en-US,en;q=0.9",
                     "Connection": "keep-alive"
                 }
-
-                # Force exact HAR headers for groovy.monster (player authorization)
-                if "groovy.monster" in url:
-                    logger.info("[*] Detected groovy.monster link, forcing robust HAR headers...")
-                    headers.update({
-                        "Referer": "https://argon.razorshell.space/",
-                        "Origin": "https://argon.razorshell.space",
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0"
-                    })
-                elif referer:
+                if referer:
                     headers["Referer"] = referer
                 
-                logger.info(f"[*] Downloading with cloudscraper: {url[:60]}...")
+                logger.info(f"[*] Downloading with curl_cffi: {url[:60]}...")
                 
-                # Attempt 1: Full impersonation (matching HAR)
-                r = scraper.get(url, headers=headers, cookies=cookies, stream=True, timeout=60, allow_redirects=True)
+                # Attempt 1: Full session (matching original bypass context)
+                r = session.get(url, headers=headers, cookies=cookies, stream=True, timeout=60, allow_redirects=True)
                 
-                # Attempt 2: Without cookies (often fixes 403 on direct links)
+                # Attempt 2: Without cookies (often fixes 403 on direct storage links)
                 if r.status_code == 403:
                     logger.warning("Attempt 1 failed (403). Retrying without cookies...")
-                    r = scraper.get(url, headers=headers, stream=True, timeout=60, allow_redirects=True)
+                    r = session.get(url, headers=headers, stream=True, timeout=60, allow_redirects=True)
                 
                 # Attempt 3: Without referer (final fallback)
                 if r.status_code == 403 and headers.get("Referer"):
                     logger.warning("Attempt 2 failed (403). Retrying without referer...")
                     temp_headers = headers.copy()
                     temp_headers.pop("Referer", None)
-                    temp_headers.pop("Origin", None)
-                    r = scraper.get(url, headers=temp_headers, stream=True, timeout=60, allow_redirects=True)
+                    r = session.get(url, headers=temp_headers, stream=True, timeout=60, allow_redirects=True)
 
                 if r.status_code != 200:
                     state["error"] = f"HTTP {r.status_code}"
