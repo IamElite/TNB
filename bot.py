@@ -160,25 +160,44 @@ async def download_file(url, file_name, status_msg, referer=None, cookies=None, 
         
         def sync_download():
             try:
-                with currequests.Session(impersonate="chrome") as s:
-                    if cookies:
-                        s.cookies.update(cookies)
-                    
-                    headers = {"User-Agent": user_agent or USER_AGENT}
-                    if referer:
-                        headers["Referer"] = referer
-                    
-                    r = s.get(url, headers=headers, stream=True, timeout=60)
-                    if r.status_code != 200:
-                        state["error"] = f"HTTP {r.status_code}"
-                        return
-                    
-                    state["total"] = int(r.headers.get('content-length', 0))
-                    with open(file_name, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=1024 * 1024):
-                            if chunk:
-                                f.write(chunk)
-                                state["downloaded"] += len(chunk)
+                # Use standard requests for better compatibility with file servers
+                import requests as stdrequests
+                
+                headers = {"User-Agent": user_agent or USER_AGENT}
+                if referer:
+                    headers["Referer"] = referer
+                
+                # First attempt with standard requests (often preferred by simple file servers)
+                r = None
+                try:
+                    r = stdrequests.get(url, headers=headers, cookies=cookies, stream=True, timeout=60, allow_redirects=True)
+                    if r.status_code == 403:
+                        logger.warning("Standard requests got 403, trying curl_cffi...")
+                        r = None # Trigger fallback
+                    elif r.status_code != 200:
+                        logger.warning(f"Standard requests got {r.status_code}, trying curl_cffi...")
+                        r = None
+                except Exception as e:
+                    logger.warning(f"Standard requests failed: {e}. Trying curl_cffi...")
+                
+                # Fallback to curl_cffi (impersonate chrome)
+                if r is None:
+                    with currequests.Session(impersonate="chrome") as s:
+                        if cookies:
+                            s.cookies.update(cookies)
+                        r = s.get(url, headers=headers, stream=True, timeout=60)
+                
+                if r.status_code != 200:
+                    state["error"] = f"HTTP {r.status_code}"
+                    return
+                
+                state["total"] = int(r.headers.get('content-length', 0))
+                with open(file_name, 'wb') as f:
+                    # Support both requests types (they both implement iter_content)
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            f.write(chunk)
+                            state["downloaded"] += len(chunk)
             except Exception as e:
                 state["error"] = str(e)
             finally:
