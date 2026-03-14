@@ -160,28 +160,19 @@ async def download_file(url, file_name, status_msg, referer=None, cookies=None, 
         
         def sync_download():
             try:
-                # Use standard requests for better compatibility with file servers
-                import requests as stdrequests
+                import cloudscraper
+                scraper = cloudscraper.create_scraper()
                 
                 headers = {"User-Agent": user_agent or USER_AGENT}
                 if referer:
                     headers["Referer"] = referer
                 
-                # First attempt with standard requests (often preferred by simple file servers)
-                r = None
-                try:
-                    r = stdrequests.get(url, headers=headers, cookies=cookies, stream=True, timeout=60, allow_redirects=True)
-                    if r.status_code == 403:
-                        logger.warning("Standard requests got 403, trying curl_cffi...")
-                        r = None # Trigger fallback
-                    elif r.status_code != 200:
-                        logger.warning(f"Standard requests got {r.status_code}, trying curl_cffi...")
-                        r = None
-                except Exception as e:
-                    logger.warning(f"Standard requests failed: {e}. Trying curl_cffi...")
+                logger.info(f"[*] Downloading using cloudscraper: {url[:60]}...")
+                r = scraper.get(url, headers=headers, cookies=cookies, stream=True, timeout=60, allow_redirects=True)
                 
-                # Fallback to curl_cffi (impersonate chrome)
-                if r is None:
+                if r.status_code != 200:
+                    # Last fallback to curl_cffi if cloudscraper fails
+                    logger.warning(f"Cloudscraper got {r.status_code}, trying curl_cffi...")
                     with currequests.Session(impersonate="chrome") as s:
                         if cookies:
                             s.cookies.update(cookies)
@@ -193,7 +184,6 @@ async def download_file(url, file_name, status_msg, referer=None, cookies=None, 
                 
                 state["total"] = int(r.headers.get('content-length', 0))
                 with open(file_name, 'wb') as f:
-                    # Support both requests types (they both implement iter_content)
                     for chunk in r.iter_content(chunk_size=1024 * 1024):
                         if chunk:
                             f.write(chunk)
