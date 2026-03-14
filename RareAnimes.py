@@ -1,3 +1,4 @@
+
 import os
 import re
 import io
@@ -7,9 +8,8 @@ import json
 import random
 import requests
 from curl_cffi import requests as currequests
-import urllib.parse
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, unquote
 import logging
 
 if sys.stdout.encoding.lower() != 'utf-8':
@@ -20,11 +20,11 @@ logger = logging.getLogger("RareAnimes")
 EP_REGEX = re.compile(r"(Episode\s*\d+|Ep\s*\d+|S\d+\s*E\d+|Movie|Special|OVA)", re.I)
 QUALITY_REGEX = re.compile(r'(\d{3,4}p|SD|HD|FHD|4K|Ultra\s*HD)', re.I)
 
-
 class RareAnimes:
     def __init__(self):
         self.ROOT_URL = "https://codedew.com/"
         self.MQ_BASE_URL = "https://swift.multiquality.click/"
+        self.BASE_URL = "https://rareanimes.app/"
         self.UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
         self.MAX_STEPS = 5
         self.STEP_DELAY = 1.0
@@ -33,20 +33,16 @@ class RareAnimes:
         self.session = self._init_session()
         self.initialized = False
         self.last_mq_referer = None
-        self.metadata = {} # Initialize metadata attribute
+        self.metadata = {}
 
     def _init_session(self):
         session = currequests.Session(impersonate="chrome110")
         session.headers.update({
-            "User-Agent": self.UA,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            "Accept-Language": "en-US,en;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
             "Accept-Encoding": "gzip, deflate, br, zstd",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
-            "Sec-Ch-Ua": '"Chromium";v="110", "Not A(Brand";v="24", "Google Chrome";v="110"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"',
             "Sec-Fetch-Dest": "document",
             "Sec-Fetch-Mode": "navigate",
             "Sec-Fetch-Site": "none",
@@ -55,16 +51,12 @@ class RareAnimes:
         return session
 
     def init_session(self):
-        """Initialize session by visiting home page and codedew."""
+        """Initialize session by visiting home page."""
         if self.initialized: return
         try:
             logger.info("[*] Initializing session...")
-            # Visit main site to get CF cookies
-            self.session.get("https://rareanimes.app/", timeout=15)
-            # Pre-visit codedew to establish session if needed
-            self.session.headers.update({"Sec-Fetch-Site": "cross-site"})
-            res = self.session.get(self.ROOT_URL, timeout=15)
-            logger.info(f"[*] Session Inited. codedew Status: {res.status_code}")
+            # Visit main site to establish basic session
+            self.session.get(self.BASE_URL, timeout=15)
             self.initialized = True
         except Exception as e:
             logger.error(f"[!] Session Init Error: {e}", exc_info=False)
@@ -197,31 +189,28 @@ class RareAnimes:
             else:
                 final_list.append(item)
 
-        # 3. Deduplicate and clean by numbering to fix indexing shifts
-        # We group by numeric part of the label
         processed = {}
         for item in final_list:
             lbl = item["label"]
             match = re.search(r'(\d+)', lbl)
-            num = int(match.group(1)) if match else lbl # Use full label if no number
+            num = int(match.group(1)) if match else lbl
             
             if num not in processed:
                 processed[num] = item
             else:
-                # Prefer the one with longer label (usually "Episode X" vs "EP X")
                 if len(lbl) > len(processed[num]["label"]):
                     processed[num] = item
         
-        # Return sorted by number
         sorted_keys = sorted(processed.keys(), key=lambda x: x if isinstance(x, int) else 9999)
         return [processed[k] for k in sorted_keys]
 
     def _extract_links_from_hub(self, hub_url, referer):
         try:
-            # Add specific headers for hub requests
             self.session.headers.update({
-                "Referer": "https://rareanimes.app/",
-                "Sec-Fetch-Site": "cross-site"
+                "Referer": self.BASE_URL,
+                "Sec-Fetch-Site": "cross-site",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Dest": "document"
             })
             r = self.session.get(hub_url, headers={"Referer": referer}, timeout=15)
             if r.status_code != 200: return []
@@ -232,7 +221,6 @@ class RareAnimes:
                 if "codedew.com/zipper/" in href and href not in seen:
                     seen.add(href)
                     label = re.sub(r'\[|\]', '', a.get_text(strip=True)).strip()
-                    # Normalize labels from hubs
                     m = EP_REGEX.search(label)
                     label = m.group(1) if m else label
                     eps.append({"url": href, "referer": hub_url, "label": label, "is_hub": False})
@@ -253,42 +241,39 @@ class RareAnimes:
             m = EP_REGEX.search(p)
             if m and len(p) < 200: return m.group(1).title()
             curr = curr.parent
-
-        curr = tag.parent
-        while curr:
-            prev = curr.find_previous_sibling()
-            while prev:
-                m = EP_REGEX.search(prev.get_text(strip=True))
-                if m: return m.group(1).title()
-                prev = prev.find_previous_sibling()
-            curr = curr.parent
-            if curr and curr.name == "body": break
         return "Episode/Download"
 
     def process_zipper(self, url, referer):
         try:
             cur_url, cur_ref = url, referer
             for step in range(1, self.MAX_STEPS + 1):
-                headers = {"Referer": cur_ref}
-                logger.info(f"      [#] Step {step}: Requesting {cur_url[:60]}...")
+                # Ensure headers are correct for each step
+                self.session.headers.update({
+                    "Referer": cur_ref,
+                    "Sec-Fetch-Site": "cross-site" if "codedew.com" in cur_url and "rareanimes.app" in cur_ref else "same-origin",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Dest": "document"
+                })
+                
+                logger.info(f"       [#] Step {step}: Requesting {cur_url[:60]}...")
                 
                 resp = None
                 for attempt in range(2):
                     try:
-                        resp = self.session.get(cur_url, headers=headers, timeout=15)
+                        resp = self.session.get(cur_url, timeout=15)
                         if resp.status_code == 200:
                             break
                         if resp.status_code == 403:
-                            logger.warning(f"      [!] 403 Forbidden at step {step} (Attempt {attempt+1})")
+                            logger.warning(f"       [!] 403 Forbidden at step {step} (Attempt {attempt+1})")
                         else:
-                            logger.warning(f"      [!] Status {resp.status_code} at step {step}")
+                            logger.warning(f"       [!] Status {resp.status_code} at step {step}")
                         time.sleep(2)
                     except Exception as e:
-                        logger.error(f"      [!] Request error: {e}")
+                        logger.error(f"       [!] Request error: {e}")
                         if attempt == 1: raise
                 
                 if not resp or resp.status_code != 200: 
-                    logger.warning(f"      [!] Failed at step {step}. Status: {resp.status_code if resp else 'No Resp'}")
+                    logger.warning(f"       [!] Failed at step {step}. Status: {resp.status_code if resp else 'No Resp'}")
                     return None
 
                 token = re.search(r'name="rtiwatch"\s+value="([^"]+)"', resp.text)
@@ -300,14 +285,13 @@ class RareAnimes:
                 soup = BeautifulSoup(resp.text, "html.parser")
                 nxt = self._find_next_step(soup, cur_url)
                 if not nxt: 
-                    logger.warning(f"    [!] Dead end at step {step} for {cur_url}. Status: {resp.status_code}")
-                    logger.warning(f"    [!] HTML Snippet: {resp.text[:500]}")
+                    logger.warning(f"    [!] Dead end at step {step}")
                     return None
                 cur_ref, cur_url = cur_url, nxt
                 time.sleep(self.STEP_DELAY)
             logger.warning(f"    [!] Exceeded {self.MAX_STEPS} steps.")
         except Exception as e:
-            logger.error(f"    [!] Zipper error: {e}", exc_info=False)
+            logger.error(f"    [!] Zipper error: {e}")
         return None
 
     def _find_next_step(self, soup, current_url):
@@ -331,22 +315,18 @@ class RareAnimes:
 
     def process_multiquality(self, downlead_url):
         try:
-            hdrs = {"Referer": self.ROOT_URL}
-            resp = self.session.get(downlead_url, headers=hdrs, timeout=15)
+            self.session.headers.update({"Referer": self.ROOT_URL})
+            resp = self.session.get(downlead_url, timeout=15)
             jd = self._extract_juicy_data(resp.text)
-            if not jd: 
-                logger.error("    [!] juicyData not found")
-                return None
+            if not jd: return None
 
             token = jd.get("token")
             links_route = jd.get("routes", {}).get("links")
             ping_route = jd.get("routes", {}).get("ping")
-            if not token or not links_route: 
-                logger.error("    [!] Token/route missing")
-                return None
+            if not token or not links_route: return None
 
             if ping_route:
-                self.session.post(urljoin(self.MQ_BASE_URL, ping_route), headers=hdrs, timeout=10)
+                self.session.post(urljoin(self.MQ_BASE_URL, ping_route), timeout=10)
             time.sleep(1.0)
 
             api_resp = self.session.post(
@@ -356,15 +336,11 @@ class RareAnimes:
                          "Origin": self.MQ_BASE_URL.rstrip("/")},
                 json={"captcha": None, "_token": token}, timeout=15)
 
-            if api_resp.status_code != 200: 
-                logger.error(f"    [!] API error {api_resp.status_code}: {api_resp.text[:100]}")
-                return None
+            if api_resp.status_code != 200: return None
 
             data = api_resp.json()
             quals = data.get("qualities", [])
             if data.get("success") and quals:
-                # Quality link might need this metadata for download
-                # Use the base domain as referer as seen in successful browser requests
                 self.metadata = {
                     'cookies': self.session.cookies.get_dict(),
                     'referer': downlead_url,
@@ -373,13 +349,8 @@ class RareAnimes:
                 
                 result = []
                 for q in quals:
-                    lbl = q.get("label") or q.get("quality")
-                    if not lbl or lbl == "N/A":
-                        title = self._extract_title(resp.text)
-                        lbl = self._quality_from_text(title) or self._quality_from_text(q.get("link","")) or "N/A"
-                    
+                    lbl = q.get("label") or q.get("quality") or "N/A"
                     link = q.get("link")
-                    # Append metadata to each link object for easier use in bot.py
                     result.append({
                         "label": lbl, 
                         "size": q.get("size"), 
@@ -387,21 +358,9 @@ class RareAnimes:
                         "metadata": self.metadata
                     })
                 return result
-            else:
-                logger.warning(f"    [!] No qualities. Msg: {data.get('message')}")
         except Exception as e:
-            logger.error(f"    [!] MQ error: {e}", exc_info=False)
+            logger.error(f"    [!] MQ error: {e}")
         return None
-
-    def _extract_title(self, html):
-        soup = BeautifulSoup(html, "html.parser")
-        h = soup.find("div", class_="head__title")
-        if h: return h.get_text(" ", strip=True).replace("DOWNLOAD:", "").strip()
-        for tag in soup.find_all(["h1", "h2", "title"]):
-            t = tag.get_text(strip=True)
-            if "download" in t.lower() or "episode" in t.lower():
-                return t.split("|")[0].split("-")[0].strip()
-        return ""
 
     def _extract_juicy_data(self, html):
         m = re.search(r"window\.juicyData\s*=\s*(\{)", html)
@@ -415,6 +374,4 @@ class RareAnimes:
         try:
             parsed = json.loads(html[start:end])
             return parsed.get("data", parsed)
-        except Exception as e:
-            logger.error(f"    [!] juicyData parse error: {e}", exc_info=False)
-            return None
+        except: return None
