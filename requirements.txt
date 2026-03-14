@@ -1,4 +1,3 @@
-#pyrogram
 kurigram
 TgCrypto
 requests
@@ -6,3 +5,5 @@ beautifulsoup4
 aiohttp
 curl_cffi
 flask
+cloudscraper
+requests-toolbelt
