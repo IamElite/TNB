@@ -38,24 +38,36 @@ class RareAnimes:
     def _init_session(self):
         session = currequests.Session(impersonate="chrome110")
         session.headers.update({
-            'User-Agent': self.UA,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
+            "User-Agent": self.UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br, zstd",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Ch-Ua": '"Chromium";v="110", "Not A(Brand";v="24", "Google Chrome";v="110"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1"
         })
         return session
 
     def init_session(self):
+        """Initialize session by visiting home page and codedew."""
         if self.initialized: return
-        logger.info("[*] Initializing session...")
         try:
-            # Just hit the home page to get early cookies/tokens
-            self.session.get("https://rareanimes.app/", timeout=10)
-            self.session.get(self.ROOT_URL, timeout=10)
+            logger.info("[*] Initializing session...")
+            # Visit main site to get CF cookies
+            self.session.get("https://rareanimes.app/", timeout=15)
+            # Pre-visit codedew to establish session if needed
+            self.session.headers.update({"Sec-Fetch-Site": "cross-site"})
+            res = self.session.get(self.ROOT_URL, timeout=15)
+            logger.info(f"[*] Session Inited. codedew Status: {res.status_code}")
             self.initialized = True
         except Exception as e:
-            logger.warning(f"[*] Session init warning: {e}")
+            logger.error(f"[!] Session Init Error: {e}", exc_info=False)
             self.initialized = True # Proceed anyway
 
     def get_session_cookies(self):
@@ -206,6 +218,11 @@ class RareAnimes:
 
     def _extract_links_from_hub(self, hub_url, referer):
         try:
+            # Add specific headers for hub requests
+            self.session.headers.update({
+                "Referer": "https://rareanimes.app/",
+                "Sec-Fetch-Site": "cross-site"
+            })
             r = self.session.get(hub_url, headers={"Referer": referer}, timeout=15)
             if r.status_code != 200: return []
             soup = BeautifulSoup(r.text, "html.parser")
@@ -401,5 +418,3 @@ class RareAnimes:
         except Exception as e:
             logger.error(f"    [!] juicyData parse error: {e}", exc_info=False)
             return None
-
-
