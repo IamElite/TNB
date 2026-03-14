@@ -25,26 +25,26 @@ class RareAnimes:
     def __init__(self):
         self.ROOT_URL = "https://codedew.com/"
         self.MQ_BASE_URL = "https://swift.multiquality.click/"
-        self.UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        self.UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
         self.MAX_STEPS = 5
         self.STEP_DELAY = 1.0
 
-        # Use curl_cffi to perfectly impersonate a real browser TLS fingerprint
-        s = currequests.Session(impersonate="chrome")
-        s.headers.update({
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1"
-        })
-        self.session = s
-        self.UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        # Use curl_cffi to perfectly impersonate a real browser
+        self.session = self._init_session()
         self.initialized = False
         self.last_mq_referer = None
+        self.metadata = {} # Initialize metadata attribute
+
+    def _init_session(self):
+        session = currequests.Session(impersonate="chrome110")
+        session.headers.update({
+            'User-Agent': self.UA,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+        })
+        return session
 
     def init_session(self):
         if self.initialized: return
@@ -346,11 +346,12 @@ class RareAnimes:
             data = api_resp.json()
             quals = data.get("qualities", [])
             if data.get("success") and quals:
-                # Capture session state for the caller
-                metadata = {
-                    "cookies": self.session.cookies.get_dict(),
-                    "referer": downlead_url,
-                    "user_agent": self.UA
+                # Quality link might need this metadata for download
+                # Use the base domain as referer as seen in successful browser requests
+                self.metadata = {
+                    'cookies': self.session.cookies.get_dict(),
+                    'referer': downlead_url,
+                    'user_agent': self.UA
                 }
                 
                 result = []
@@ -366,7 +367,7 @@ class RareAnimes:
                         "label": lbl, 
                         "size": q.get("size"), 
                         "link": link,
-                        "metadata": metadata
+                        "metadata": self.metadata
                     })
                 return result
             else:

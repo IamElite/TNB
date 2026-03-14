@@ -161,44 +161,50 @@ async def download_file(url, file_name, status_msg, referer=None, cookies=None, 
         def sync_download():
             try:
                 # Use curl_cffi for perfect impersonation and session handling
-                session = currequests.Session(impersonate="chrome110")
-                
-                headers = {
-                    "User-Agent": user_agent or USER_AGENT,
-                    "Accept": "*/*",
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Connection": "keep-alive"
-                }
-                if referer:
-                    headers["Referer"] = referer
-                
-                logger.info(f"[*] Downloading with curl_cffi: {url[:60]}...")
-                
-                # Attempt 1: Full session (matching original bypass context)
-                r = session.get(url, headers=headers, cookies=cookies, stream=True, timeout=60, allow_redirects=True)
-                
-                # Attempt 2: Without cookies (often fixes 403 on direct storage links)
-                if r.status_code == 403:
-                    logger.warning("Attempt 1 failed (403). Retrying without cookies...")
-                    r = session.get(url, headers=headers, stream=True, timeout=60, allow_redirects=True)
-                
-                # Attempt 3: Without referer (final fallback)
-                if r.status_code == 403 and headers.get("Referer"):
-                    logger.warning("Attempt 2 failed (403). Retrying without referer...")
-                    temp_headers = headers.copy()
-                    temp_headers.pop("Referer", None)
-                    r = session.get(url, headers=temp_headers, stream=True, timeout=60, allow_redirects=True)
-
-                if r.status_code != 200:
-                    state["error"] = f"HTTP {r.status_code}"
-                    return
-                
-                state["total"] = int(r.headers.get('content-length', 0))
-                with open(file_name, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=1024 * 1024):
-                        if chunk:
-                            f.write(chunk)
-                            state["downloaded"] += len(chunk)
+                with currequests.Session(impersonate="chrome110") as session:
+                    # Standard browser headers for download
+                    session.headers.update({
+                        "User-Agent": user_agent or USER_AGENT,
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                        "Accept-Language": "en-US,en;q=0.9",
+                        "Connection": "keep-alive",
+                        "Upgrade-Insecure-Requests": "1"
+                    })
+                    
+                    if referer:
+                        session.headers['Referer'] = referer
+                    
+                    if cookies:
+                        session.cookies.update(cookies)
+                        
+                    logger.info(f"[*] Starting download from: {url[:60]}...")
+                    
+                    # Attempt 1: Standard request with provided context
+                    r = session.get(url, stream=True, timeout=60, allow_redirects=True)
+                    
+                    if r.status_code == 403:
+                        logger.warning("Attempt 1: HTTP 403. Retrying without cookies...")
+                        session.cookies.clear()
+                        r = session.get(url, stream=True, timeout=60, allow_redirects=True)
+                    
+                    if r.status_code == 403 and session.headers.get("Referer"):
+                        logger.warning("Attempt 2: HTTP 403. Retrying without referer...")
+                        session.headers.pop("Referer", None)
+                        r = session.get(url, stream=True, timeout=60, allow_redirects=True)
+                    
+                    if r.status_code != 200:
+                        logger.error(f"[!] Download failed after retries. Status: {r.status_code}")
+                        state["error"] = f"HTTP {r.status_code}"
+                        return
+                    
+                    state["total"] = int(r.headers.get('content-length', 0))
+                    logger.info(f"[+] Download success. Size: {humanbytes(state['total'])}")
+                    
+                    with open(file_name, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=1024 * 1024):
+                            if chunk:
+                                f.write(chunk)
+                                state["downloaded"] += len(chunk)
             except Exception as e:
                 state["error"] = str(e)
             finally:
