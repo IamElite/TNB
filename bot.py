@@ -12,6 +12,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import MessageNotModified, FloodWait
 import logging
+import shutil
 from flask import Flask
 from threading import Thread
 
@@ -21,6 +22,12 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger("AnimeBot")
+
+# Download Directory Configuration
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
+if not os.path.exists(DOWNLOAD_DIR):
+    os.makedirs(DOWNLOAD_DIR)
 
 # Global PATH fix for FFmpeg/FFprobe based on environment (Docker or Heroku)
 for p in ["/app/.apt/usr/bin", "/app/vendor/ffmpeg/bin", "/usr/bin"]:
@@ -153,6 +160,10 @@ def clean_unwanted_tags(text):
     text = re.sub(r'\[.*?\]', '', text)
     text = re.sub(r'\(.*?\)', '', text)
     text = re.sub(r'www\.\S+', '', text)
+    # Remove common quality/format tags that might be left over
+    text = re.sub(r'Dubbed|Hindi|Dual|Audio|Multi|UNCUT|Eng|Sub|Soft|Hard|ESub|HSub|SD|HD|FHD|4K|Ultra|Web-DL|BluRay|x264|x265|HEVC', '', text, flags=re.I)
+    # Remove leftover separators
+    text = re.sub(r'[\_\.\-]+', ' ', text)
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
@@ -216,9 +227,9 @@ def parse_filename(basename):
     
     if name_clean:
         # Remove trailing/leading hyphens/dots/spaces
-        name_clean = re.sub(r'^[ \.\-]+|[ \.\-]+$', '', name_clean)
+        name_clean = re.sub(r'^[ \.\_\-]+|[ \.\_\-]+$', '', name_clean)
         # Collapse multiple hyphens/dots/spaces
-        name_clean = re.sub(r'[\.\-]{2,}', '-', name_clean)
+        name_clean = re.sub(r'[\.\-\_]{2,}', '-', name_clean)
         name_clean = re.sub(r'\s+', ' ', name_clean)
         data["name"] = name_clean.strip()
         
@@ -261,28 +272,44 @@ async def get_audio_language(filepath):
     except: pass
     return "Hindi" # Fallback for your use case
 
-def make_caption(anime_name, filepath, size, duration, season_fallback=None, ep_fallback=None):
-    """Generate professional Telegram caption as per user's specific request."""
-    # Parse info from site title
-    info = parse_filename(anime_name)
+def make_caption(filepath, size, duration, series_info=None):
+    """Generate professional Telegram caption using the real filename as primary source."""
+    basename = os.path.basename(filepath)
+    # 1. Try to parse metadata from the REAL filename
+    info = parse_filename(basename)
     
-    # Clean display name - Ensure it's the full name
-    display_name = info['name'] if info['name'] not in ["Unknown", "Download"] else anime_name
-    display_name = clean_unwanted_tags(display_name)
+    # 2. Extract series info from page title as a strong fallback for Name
+    series_name = None
+    if series_info:
+        series_name = parse_filename(series_info)['name']
+        series_name = clean_unwanted_tags(series_name)
     
-    # Quality extraction
-    quality = get_real_quality(anime_name)
-    if quality == "720p":
-        quality = get_real_quality(filepath)
+    # 3. Final cleanup and merge
+    # Prefer series_name from page if filename name is messy or too short
+    file_name_parsed = clean_unwanted_tags(info['name'])
     
-    # Fallbacks / Formatting
-    season = info.get('season') or (season_fallback.zfill(2) if season_fallback else None)
-    episode = info.get('episode') or (ep_fallback.zfill(2) if ep_fallback else None)
+    if series_name and (len(series_name) > len(file_name_parsed) or file_name_parsed == "Unknown"):
+        display_name = series_name
+    else:
+        display_name = file_name_parsed or series_name or "Unknown Anime"
+    
+    # Ensure season/year fallbacks from page title
+    if series_info:
+        info_alt = parse_filename(series_info)
+        if not info['season']: info['season'] = info_alt['season']
+        if not info['year']: info['year'] = info_alt['year']
+        if not info['is_movie']: info['is_movie'] = info_alt['is_movie']
+    
+    # Quality extraction from filename
+    quality = get_real_quality(filepath)
+    
+    # Formatting
+    season = info.get('season')
+    episode = info.get('episode')
     
     size_str = humanbytes(size)
     duration_str = time_formatter(duration * 1000)
     
-    # Match user's requested format exactly
     if info['is_movie']:
         cap = f"🎬 **{display_name}**"
         if info['year']: cap += f" ({info['year']})"
@@ -295,13 +322,13 @@ def make_caption(anime_name, filepath, size, duration, season_fallback=None, ep_
 │ ⏱️ **Duration:** {duration_str}
 ╰━━━━━━━━━━━━━━━━━━━╯"""
     else:
-        # User requested exact style:
-        # 🎬 Name \n ╭ \n │ season : \n 📺 Episode: 12 ...
+        # Professional format: Anime Name (Year) \n ╭ \n │ ✨ season : 01 \n │ 📺 Episode: 01 \n ...
         cap = f"🎬 **{display_name}**"
+        if info['year']: cap += f" ({info['year']})"
         cap += f"\n╭━━━━━━━━━━━━━━━━━━━╮"
         if season:
-            cap += f"\n│ **season :** {season}"
-        cap += f"\n📺 **Episode:** {episode if episode else 'N/A'}"
+            cap += f"\n│ ✨ **season :** {season}"
+        cap += f"\n│ 📺 **Episode:** {episode if episode else 'N/A'}" 
         cap += f"""
 │ 🌐 **Language:** Hindi
 │ 📊 **Quality:** {quality.upper()}
@@ -555,7 +582,7 @@ def sort_qualities(downloads):
     """Sorts download objects from low to high quality."""
     return sorted(downloads, key=lambda x: parse_quality(x.get('label', '')))
 
-async def process_episode_batch(client, message, episode_data, status_msg, total_eps, current_idx):
+async def process_episode_batch(client, message, episode_data, status_msg, total_eps, current_idx, series_info=None):
     """Processes all qualities for a single episode together."""
     ep_name = episode_data.get("episode", "Unknown Episode")
     downloads = sort_qualities(episode_data.get("downloads", []))
@@ -577,43 +604,55 @@ async def process_episode_batch(client, message, episode_data, status_msg, total
             
         if not dl_url: continue
         
-        file_name = f"download_{message.id}_{current_idx}_{quality_label.replace(' ', '_')}.mkv"
-        
-        # Update status message to show which quality of which episode is being handled
-        qual_status = " | ".join([f"**{q}**" if q == quality_label else q for q in q_labels])
-        await safe_edit(
-            status_msg, 
-            f"🚀 **Processing Ep {current_idx}/{total_eps}**\nEP: `{ep_name}`\nQualities: {qual_status}\n\n📥 **Downloading {quality_label}...**",
-            force=True
-        )
-        
+        # Create a specific directory for this request/message
+        req_id = f"{message.id}"
+        req_dir = os.path.join(DOWNLOAD_DIR, req_id)
+        if not os.path.exists(req_dir):
+            os.makedirs(req_dir)
+            
         # Get metadata for the download
         metadata = dl_obj.get('metadata', {})
         ref = metadata.get("referer") or episode_data.get("referer")
         cookies = metadata.get("cookies") or episode_data.get("cookies")
         ua = metadata.get("user_agent") or episode_data.get("user_agent")
         
-        success = await download_file(dl_url, file_name, status_msg, referer=ref, cookies=cookies, user_agent=ua)
+        # Resolve real filename
+        await safe_edit(status_msg, f"🔍 **Resolving real filename for {quality_label}...**", force=True)
+        rare = RareAnimes()
+        real_name = await asyncio.to_thread(rare.resolve_filename, dl_url, referer=ref, cookies=cookies)
+        
+        if real_name:
+            # Sanitize filename: remove restricted characters but keep extension
+            real_name = re.sub(r'[\\/*?:"<>|]', "", real_name)
+            # Ensure it's not too long and has no double spaces
+            real_name = re.sub(r'\s+', ' ', real_name).strip()
+            file_base = real_name
+            logger.info(f"Resolved real filename: {file_base}")
+        else:
+            file_base = f"download_{message.id}_{current_idx}_{quality_label.replace(' ', '_')}.mkv"
+            logger.info(f"Failed to resolve filename, using fallback: {file_base}")
+
+        file_path = os.path.join(req_dir, file_base)
+
+        success = await download_file(dl_url, file_path, status_msg, referer=ref, cookies=cookies, user_agent=ua)
         if not success:
             await safe_edit(status_msg, f"❌ Failed to download: {ep_name} [{quality_label}]", force=True)
             continue
             
         await safe_edit(status_msg, f"⚙️ **Extracting Metadata Ep {current_idx}/{total_eps} [{quality_label}]...**", force=True)
-        width, height, duration = await get_video_metadata(file_name)
-        thumb_path = await generate_thumbnail(file_name, duration)
+        width, height, duration = await get_video_metadata(file_path)
+        thumb_path = await generate_thumbnail(file_path, duration)
         
         await safe_edit(status_msg, f"📤 **Uploading Ep {current_idx}/{total_eps} [{quality_label}]...**", force=True)
         start_time = time.time()
         
-        source = "RareAnimes" if "rareanime" in file_name else "HindiAnimeZone"
-        file_size = os.path.getsize(file_name)
+        file_size = os.path.getsize(file_path)
         
         # Detect audio language async
-        lang = await get_audio_language(file_name)
+        lang = await get_audio_language(file_path)
         
         # Generate professional caption
-        # Try to guess season/episode numbers from indices if not in filename
-        cap = make_caption(ep_name, file_name, file_size, duration)
+        cap = make_caption(file_path, file_size, duration, series_info=series_info)
         # Force language in caption if detected
         if lang:
             cap = cap.replace("│ 🌐 **Language:** Hindi", f"│ 🌐 **Language:** {lang}")
@@ -621,7 +660,7 @@ async def process_episode_batch(client, message, episode_data, status_msg, total
         try:
             await client.send_video(
                 chat_id=message.chat.id,
-                video=file_name,
+                video=file_path,
                 caption=cap,
                 duration=duration,
                 width=width,
@@ -634,10 +673,14 @@ async def process_episode_batch(client, message, episode_data, status_msg, total
             logger.error(f"Upload failed: {e}")
             await message.reply(f"❌ Upload failed for {ep_name} [{quality_label}]: {str(e)}")
             
+        # Cleanup folder after each episode processing or entirely after loop
+        # For simplicity and robust cleanup per request, we can keep the folder until done
+        # but the request asks to do it "leech bot jaisa" which usually means cleaning up after upload.
         try:
-            if os.path.exists(file_name): os.remove(file_name)
-            if thumb_path and os.path.exists(thumb_path): os.remove(thumb_path)
-        except: pass
+            if os.path.exists(req_dir):
+                shutil.rmtree(req_dir)
+        except Exception as e:
+            logger.error(f"Cleanup error: {e}")
 
 async def handle_hindianime(client, message, url, selection, status_msg):
     try:
@@ -650,11 +693,12 @@ async def handle_hindianime(client, message, url, selection, status_msg):
             return await status_msg.edit("❌ Koi download links nahi mile.")
             
         total = len(episodes)
+        series_info = episodes[0].get("series_info") if episodes else None # HindiAnimeZone might not have it yet
         logger.info(f"Step 4: Extracted {total} episodes with structured qualities.")
         await status_msg.edit(f"✅ Found {total} episodes. Processing qualities...")
         
         for idx, ep in enumerate(episodes, 1):
-            await process_episode_batch(client, message, ep, status_msg, total, idx)
+            await process_episode_batch(client, message, ep, status_msg, total, idx, series_info=series_info)
             
         await status_msg.delete()
         logger.info("Process completed successfully for HindiAnimeZone.")
@@ -687,11 +731,12 @@ async def handle_rareanime(client, message, url, selection, status_msg):
             return await safe_edit(status_msg, "❌ Koi episodes nahi mile.")
             
         total = len(episodes)
+        series_info = res.get("series_info")
         logger.info(f"Step 4: Found {total} episodes to process.")
         await safe_edit(status_msg, f"✅ Found {total} episodes. Processing qualities...")
         
         for idx, ep in enumerate(episodes, 1):
-            await process_episode_batch(client, message, ep, status_msg, total, idx)
+            await process_episode_batch(client, message, ep, status_msg, total, idx, series_info=series_info)
             
         await status_msg.delete()
         logger.info("Process completed successfully for RareAnimes.")

@@ -9,7 +9,7 @@ import requests
 from curl_cffi import requests as currequests
 import urllib.parse
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, unquote
 import logging
 
 if sys.stdout.encoding.lower() != 'utf-8':
@@ -84,6 +84,18 @@ class RareAnimes:
         try:
             self.init_session()
             html = self.session.get(url, timeout=20).text
+            soup = BeautifulSoup(html, "html.parser")
+            
+            # Extract main series info from page title or H1
+            series_info = ""
+            h1 = soup.find("h1")
+            if h1:
+                series_info = h1.get_text(strip=True)
+            else:
+                title_tag = soup.find("title")
+                if title_tag:
+                    series_info = title_tag.get_text(strip=True).split("|")[0].split("-")[0].strip()
+
             raw_eps = self._extract_episodes(html, url)
             
             if not raw_eps:
@@ -135,10 +147,10 @@ class RareAnimes:
                 results.append(entry)
 
             if verbose: logger.info("\n" + "═"*65 + "\n  ✅  COMPLETED\n" + "═"*65)
-            return {"episodes": results}
+            return {"episodes": results, "series_info": series_info}
         except Exception as e:
             if verbose: logger.error(f"[!] System Error: {e}", exc_info=True)
-            return {"error": str(e), "episodes": []}
+            return {"error": str(e), "episodes": [], "series_info": ""}
 
     def _group_episodes(self, episodes):
         groups = {}
@@ -429,6 +441,44 @@ class RareAnimes:
             if "download" in t.lower() or "episode" in t.lower():
                 return t.split("|")[0].split("-")[0].strip()
         return ""
+    
+    def get_filename_from_cd(self, cd):
+        """Extracts filename from content-disposition header."""
+        if not cd: return None
+        # Try filename* (higher priority, handles UTF-8)
+        fname = re.findall(r"filename\*=utf-8''([^;]+)", cd, re.I)
+        if fname: return unquote(fname[0].strip())
+        # Try filename="value"
+        fname = re.findall(r'filename="([^"]+)"', cd, re.I)
+        if fname: return fname[0].strip()
+        # Try filename=value
+        fname = re.findall(r"filename=([^;]+)", cd, re.I)
+        if fname: return fname[0].strip().strip('"').strip("'")
+        return None
+
+    def resolve_filename(self, url, referer=None, cookies=None):
+        """Resolves the real filename using Content-Disposition or URL path."""
+        headers = {"Referer": referer} if referer else {}
+        try:
+            # Use curl_cffi for robust resolution
+            with currequests.Session(impersonate="chrome124") as session:
+                if cookies: session.cookies.update(cookies)
+                # Stream to only get headers without full body download
+                res = session.get(url, headers=headers, stream=True, allow_redirects=True, timeout=15)
+                
+                # 1. Content-Disposition
+                cd = res.headers.get('Content-Disposition')
+                filename = self.get_filename_from_cd(cd)
+                if filename: return filename
+                
+                # 2. Final URL path basename
+                final_path = urlparse(res.url).path
+                filename = os.path.basename(final_path)
+                if filename and '.' in filename:
+                    return unquote(filename)
+        except Exception as e:
+            logger.debug(f"[!] Filename resolution error: {e}")
+        return None
 
     def _extract_juicy_data(self, html):
         m = re.search(r"window\.juicyData\s*=\s*(\{)", html)
