@@ -399,7 +399,7 @@ async def download_file(url, file_name, status_msg, referer=None, cookies=None, 
                 
                 await safe_edit(
                     status_msg, 
-                    f"📥 **Downloading...**\n {bar} {perc_val}%\n"
+                    f"🚀 **Downloading (High Speed)**\n {bar} {perc_val}%\n"
                     f"**Size**: {curr_size} / {total_size}\n"
                     f"**Speed**: {speed}\n"
                     f"**ETA**: {eta}",
@@ -457,9 +457,14 @@ async def download_file(url, file_name, status_msg, referer=None, cookies=None, 
                 speed = state["downloaded"] / diff if diff > 0 else 0
                 eta_sec = (state["total"] - state["downloaded"]) / speed if speed > 0 else 0
                 
+                # Progress bar for fallback
+                filled = "█" * (int(perc) // 10)
+                empty = "░" * (10 - (int(perc) // 10))
+                bar = f"[{filled}{empty}]"
+                
                 await safe_edit(
                     status_msg,
-                    f"📥 **Downloading...** {round(perc, 2)}%\n"
+                    f"🐢 **Downloading (Low Speed)**\n {bar} {round(perc, 2)}%\n"
                     f"**Size**: {humanbytes(state['downloaded'])} / {humanbytes(state['total'])}\n"
                     f"**Speed**: {humanbytes(speed)}/s\n"
                     f"**ETA**: {time_formatter(eta_sec*1000)}",
