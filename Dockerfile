@@ -1,9 +1,10 @@
 # Use an official Python slim image for a smaller footprint
 FROM python:3.10-slim
 
-# Install system dependencies (ffmpeg) and clean up apt cache to keep image small
+# Install system dependencies
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg aria2 && \
+    apt-get install -y --no-install-recommends ffmpeg aria2 ca-certificates && \
+    apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 # Set the working directory
