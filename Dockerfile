@@ -1,26 +1,20 @@
-FROM python:3.10-slim-bookworm
+# Use an official Python slim image for a smaller footprint
+FROM python:3.10-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    DEBIAN_FRONTEND=noninteractive
-
-WORKDIR /app
-
+# Install system dependencies (ffmpeg) and clean up apt cache to keep image small
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        ffmpeg \
-        aria2 \
-        ca-certificates && \
-    apt-get clean && \
+    apt-get install -y --no-install-recommends ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
-# verify aria2c is really installed
-RUN which aria2c && aria2c --version
+# Set the working directory
+WORKDIR /app
 
+# Copy requirements and install python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy the rest of the application code
 COPY . .
 
+# Start the bot worker
 CMD ["python", "bot.py"]

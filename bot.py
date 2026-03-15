@@ -116,7 +116,6 @@ def time_formatter(milliseconds: int) -> str:
           ((str(minutes) + "m, ") if minutes else "") + \
           ((str(seconds) + "s, ") if seconds else "")
     return tmp[:-2] if tmp else "0s"
-
 async def progress_for_pyrogram(current, total, ud_type, message, start):
     now = time.time()
     diff = now - start
@@ -145,6 +144,157 @@ async def progress_for_pyrogram(current, total, ud_type, message, start):
     )
     
     await safe_edit(message, f"{ud_type}\n{tmp}", force=is_done)
+
+def clean_unwanted_tags(text):
+    """Removes common distributor tags and unwanted strings."""
+    if not text: return ""
+    # Remove things like @ChannelName, [Distributor], websites, etc.
+    text = re.sub(r'@[\w_]+', '', text)
+    text = re.sub(r'\[.*?\]', '', text)
+    text = re.sub(r'\(.*?\)', '', text)
+    text = re.sub(r'www\.\S+', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+def parse_filename(basename):
+    """Extracts Season, Episode, Year and Name from filename or title string."""
+    data = {"name": "Unknown", "season": None, "episode": None, "year": None, "is_movie": False}
+    
+    # Try to find year (4 digits in brackets or standalone 19xx/20xx)
+    yr_match = re.search(r'\(?(19|20)\d{2}\)?', basename)
+    if yr_match:
+        data["year"] = yr_match.group(0).strip('()')
+        
+    # Detect if Movie
+    if any(x in basename.lower() for x in ["movie", "film"]):
+        data["is_movie"] = True
+        
+    # Season patterns: S2, S02, Season 2
+    s_match = re.search(r'S(\d+)', basename, re.I) or re.search(r'Season\s*(\d+)', basename, re.I)
+    if s_match:
+        data["season"] = s_match.group(1).zfill(2)
+        
+    # Episode patterns: E01, Episode 01, Ep 01, Ep.01
+    ep_match = re.search(r'E(\d+)', basename, re.I) or \
+               re.search(r'Episode\s*(\d+)', basename, re.I) or \
+               re.search(r'Ep[\.\s]*(\d+)', basename, re.I)
+    
+    if ep_match:
+        data["episode"] = ep_match.group(1).zfill(2)
+    else:
+        # Standalone number check: "Solo Leveling 01" -> 01
+        # Avoid years and resolutions (720p etc handled by quality regex later)
+        # We look for a number that isn't part of a year or resolution
+        nums = re.findall(r'(?:\s|^)(\d{1,4})(?:\b|(?=[^\dp]))', basename)
+        for n in nums:
+            if n != data["year"] and int(n) < 2000: # Simple heuristic: episodes are usually < 2000
+                data["episode"] = n.zfill(2)
+                break
+        
+    # Clean Name extraction
+    name_clean = basename
+    # Remove extension
+    name_clean = re.sub(r'\.(mp4|mkv|avi|webm)$', '', name_clean, flags=re.I)
+    # Remove episode/season info
+    name_clean = re.sub(r'(S\d+|E\d+|Season\s*\d+|Episode\s*\d+|Ep\s*\d+)', '', name_clean, flags=re.I)
+    # Remove quality/year/tags
+    name_clean = re.sub(r'\d{3,4}p', '', name_clean, flags=re.I)
+    name_clean = clean_unwanted_tags(name_clean)
+    
+    if name_clean:
+        # Remove trailing/leading hyphens/dots/spaces
+        name_clean = re.sub(r'^[ \.\-]+|[ \.\-]+$', '', name_clean)
+        # Collapse multiple hyphens/dots/spaces
+        name_clean = re.sub(r'[\.\-]{2,}', '-', name_clean)
+        name_clean = re.sub(r'\s+', ' ', name_clean)
+        data["name"] = name_clean.strip()
+        
+    return data
+
+def get_real_quality(filepath):
+    """Extracts quality string from filename."""
+    basename = os.path.basename(filepath)
+    match = re.search(r'(\d{3,4}p)', basename, re.I)
+    if match:
+        return match.group(1)
+    return "720p" # Default fallback
+
+async def get_audio_language(filepath):
+    """Best effort audio language detection using ffprobe."""
+    try:
+        cmd = [
+            "ffprobe", "-v", "error", "-select_streams", "a",
+            "-show_entries", "stream_tags=language", "-of", "json", filepath
+        ]
+        process = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await process.communicate()
+        data = json.loads(stdout)
+        
+        langs = []
+        for stream in data.get("streams", []):
+            lang = stream.get("tags", {}).get("language")
+            if lang:
+                # Map codes to Names
+                if lang == "hin": langs.append("Hindi")
+                elif lang == "eng": langs.append("English")
+                elif lang == "jpn": langs.append("Japanese")
+                else: langs.append(lang.capitalize())
+        
+        if langs:
+            # Avoid duplicates and join
+            return " / ".join(sorted(list(set(langs))))
+    except: pass
+    return "Hindi" # Fallback for your use case
+
+def make_caption(anime_name, filepath, size, duration, season_fallback=None, ep_fallback=None):
+    """Generate professional Telegram caption."""
+    # Use anime_name (the episode title from site) as primary info source
+    # because filepath is often a generic 'download_xxx.mkv'
+    info = parse_filename(anime_name)
+    
+    # If info name is unknown, use the raw anime_name
+    display_name = info['name'] if info['name'] not in ["Unknown", "Download"] else anime_name
+    display_name = clean_unwanted_tags(display_name)
+    
+    # Quality extraction - try anime_name first, then filepath
+    quality = get_real_quality(anime_name)
+    if quality == "720p": # If default, check filepath
+        quality = get_real_quality(filepath)
+    
+    # Fallbacks
+    season = info.get('season') or (season_fallback.zfill(2) if season_fallback else None)
+    episode = info.get('episode') or (ep_fallback.zfill(2) if ep_fallback else None)
+    
+    size_str = humanbytes(size)
+    duration_str = time_formatter(duration * 1000)
+    
+    if info['is_movie']:
+        cap = f"🎬 **{display_name}**"
+        if info['year']: cap += f" ({info['year']})"
+        cap += f"""
+╭━━━━━━━━━━━━━━━━━━━╮
+│ 🍿 **Type:** Movie
+│ 🌐 **Language:** Hindi
+│ 📊 **Quality:** {quality}
+│ 📦 **Size:** {size_str}
+│ ⏱️ **Duration:** {duration_str}
+╰━━━━━━━━━━━━━━━━━━━╯"""
+    else:
+        cap = f"🎬 **{display_name}**\n╭━━━━━━━━━━━━━━━━━━━╮"
+        if season:
+            cap += f"\n│ 🏝️ **Season:** {season}"
+        if episode:
+            cap += f"\n│ 📺 **Episode:** {episode}"
+            
+        cap += f"""
+│ 🌐 **Language:** Hindi
+│ 📊 **Quality:** {quality}
+│ 📦 **Size:** {size_str}
+│ ⏱️ **Duration:** {duration_str}
+╰━━━━━━━━━━━━━━━━━━━╯"""
+    return cap
 
 async def get_video_metadata(filepath):
     try:
@@ -193,61 +343,12 @@ async def download_file(url, file_name, status_msg, referer=None, cookies=None, 
     logger.info(f"Step 5: File download started -> {file_name}")
     start_t = time.time()
     
-    # Try aria2c first
-    try:
-        cmd = [
-            "aria2c", "-x", "16", "-s", "16", "-k", "1M",
-            "--user-agent", user_agent or USER_AGENT,
-            "--out", file_name,
-            "--file-allocation=none",
-            "--summary-interval=1",
-            url
-        ]
-        if referer: cmd.extend(["--referer", referer])
-        if cookies:
-            cookie_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
-            cmd.extend(["--header", f"Cookie: {cookie_str}"])
-
-        process = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
-        )
-
-        while True:
-            line = await process.stdout.readline()
-            if not line: break
-            line = line.decode('utf-8', 'ignore').strip()
-            
-            # aria2c output example: [#2089b0 1.2MiB/3.4MiB(35%) CN:1 SPD:648KiB ETA:3s]
-            match = re.search(r'\((\d+)%\).*?SPD:([\d\.]+[KMG]i?B).*?ETA:(\d+s|[\d\w]+)', line)
-            if match:
-                perc = match.group(1)
-                speed = match.group(2).replace('i', '') + '/s'
-                eta = match.group(3)
-                
-                await safe_edit(
-                    status_msg, 
-                    f"📥 **Downloading (aria2c)...**\n"
-                    f"**Progress**: {perc}%\n"
-                    f"**Speed**: {speed}\n"
-                    f"**ETA**: {eta}",
-                    force=False
-                )
-        
-        await process.wait()
-        if process.returncode == 0 and os.path.exists(file_name):
-            logger.info(f"aria2c download complete -> {file_name}")
-            return True
-        else:
-            logger.warning(f"aria2c failed (code {process.returncode}). Falling back to curl_cffi...")
-    except Exception as e:
-        logger.warning(f"aria2c setup error: {e}. Falling back to curl_cffi...")
-
-    # Fallback to curl_cffi with improved progress
     try:
         state = {"downloaded": 0, "total": 0, "done": False, "error": None}
         
         def sync_download():
             try:
+                # Using curl_cffi for robust impersonation
                 with currequests.Session(impersonate="chrome110") as session:
                     session.headers.update({
                         "User-Agent": user_agent or USER_AGENT,
@@ -285,7 +386,7 @@ async def download_file(url, file_name, status_msg, referer=None, cookies=None, 
                 
                 await safe_edit(
                     status_msg,
-                    f"📥 **Downloading (fallback)...** {round(perc, 2)}%\n"
+                    f"📥 **Downloading...** {round(perc, 2)}%\n"
                     f"**Size**: {humanbytes(state['downloaded'])} / {humanbytes(state['total'])}\n"
                     f"**Speed**: {humanbytes(speed)}/s\n"
                     f"**ETA**: {time_formatter(eta_sec*1000)}",
@@ -296,9 +397,11 @@ async def download_file(url, file_name, status_msg, referer=None, cookies=None, 
         if state["error"]:
             await safe_edit(status_msg, f"❌ Download failed: {state['error']}", force=True)
             return False
+            
+        logger.info(f"Step 5: File download complete -> {file_name}")
         return True
     except Exception as e:
-        logger.error(f"Download fallback error: {str(e)}", exc_info=True)
+        logger.error(f"Download error: {str(e)}", exc_info=True)
         await safe_edit(status_msg, f"❌ Download failed: {str(e)}", force=True)
         return False
 
@@ -425,12 +528,23 @@ async def process_episode_batch(client, message, episode_data, status_msg, total
         start_time = time.time()
         
         source = "RareAnimes" if "rareanime" in file_name else "HindiAnimeZone"
+        file_size = os.path.getsize(file_name)
         
+        # Detect audio language async
+        lang = await get_audio_language(file_name)
+        
+        # Generate professional caption
+        # Try to guess season/episode numbers from indices if not in filename
+        cap = make_caption(ep_name, file_name, file_size, duration)
+        # Force language in caption if detected
+        if lang:
+            cap = cap.replace("│ 🌐 **Language:** Hindi", f"│ 🌐 **Language:** {lang}")
+
         try:
             await client.send_video(
                 chat_id=message.chat.id,
                 video=file_name,
-                caption=f"{ep_name} [{quality_label}] via @{source}",
+                caption=cap,
                 duration=duration,
                 width=width,
                 height=height,
