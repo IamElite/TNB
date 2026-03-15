@@ -26,13 +26,13 @@ class HindiAnimeZone:
 
     def pro_main_bypass(self, url, selection=None):
         """Main entry point to bypass anime pages or direct gate links.
-        Selection can be a list of episode indices (1-indexed)."""
+        Returns a list of episodes: [{'episode': 'name', 'downloads': [{'label': '480p', 'link': '...', 'server': '...'}]}]"""
         logger.info(f"[*] ANALYZING: {url}")
         
         if self.GATE_PATTERN.search(url):
-            self._handle_direct_gate(url)
-            return
+            return self._handle_direct_gate(url)
 
+        results = []
         try:
             r = self.session.get(url, timeout=20)
             soup = BeautifulSoup(r.text, 'html.parser')
@@ -43,8 +43,7 @@ class HindiAnimeZone:
             episodes = [ep for ep in all_ep if not ep.find('div', class_='episode')]
             
             if not episodes:
-                self.process_legacy_page(soup)
-                return
+                return self.process_legacy_page(soup)
 
             # Apply selection if provided
             if selection:
@@ -56,7 +55,7 @@ class HindiAnimeZone:
 
             if not episodes:
                 logger.warning("[!] No episodes match selection.")
-                return
+                return []
 
             logger.info(f"\n[+] PROCESSING {len(episodes)} CONTENT BLOCK(S)")
             seen_hrefs = set()
@@ -68,18 +67,31 @@ class HindiAnimeZone:
                 quality_map = self._get_quality_links(ep_div, seen_hrefs)
                 if not quality_map: continue
                     
-                logger.info(f"\n{'='*40}\n[*] PROCESSING: {ep_name.split('|')[0].strip()}")
+                episode_entry = {"episode": ep_name.split('|')[0].strip(), "downloads": []}
+                
+                logger.info(f"\n{'='*40}\n[*] PROCESSING: {episode_entry['episode']}")
                 for q, data in quality_map.items():
-                    logger.info(f"\n    [*] QUALITY: {data['label']}")
+                    logger.info(f"    [*] QUALITY: {data['label']}")
                     server_links = self.bypass_gate(data['url'])
                     if server_links:
                         for s, l in server_links.items(): 
-                            logger.info(f"        {s}: {l}")
-                            self.get_final_link(s, l)
+                            final_link = self.get_final_link(s, l)
+                            if final_link:
+                                episode_entry["downloads"].append({
+                                    "label": data['label'],
+                                    "link": final_link,
+                                    "server": s
+                                })
                     else:
                         logger.warning(f"        [!] Failed to extract server links")
+                
+                if episode_entry["downloads"]:
+                    results.append(episode_entry)
+            
+            return results
         except Exception as e:
             logger.error(f"[!] Error: {e}", exc_info=True)
+            return []
 
     def _extract_ep_name(self, ep_div, fallback):
         tag = ep_div.select_one('.episode-title')
@@ -113,11 +125,15 @@ class HindiAnimeZone:
 
     def _handle_direct_gate(self, url):
         links = self.bypass_gate(url)
+        downloads = []
         if links:
             logger.info(f"[+] SERVERS EXTRACTED:")
             for n, l in links.items(): 
-                logger.info(f"    - {n}: {l}")
-                self.get_final_link(n, l)
+                final_link = self.get_final_link(n, l)
+                if final_link:
+                    downloads.append({"label": "Direct Link", "link": final_link, "server": n})
+        
+        return [{"episode": "Direct Download", "downloads": downloads}] if downloads else []
 
 
     def bypass_gate(self, gate_url):
@@ -204,17 +220,19 @@ class HindiAnimeZone:
         return None
 
     def get_final_link(self, srv_name, url):
-        """Routes url to the appropriate bypasser and prints the final link."""
+        """Routes url to the appropriate bypasser and returns the final link."""
         srv = srv_name.upper()
+        dl = None
         if 'GDSHARE' in srv:
             dl = self._get_gdshare_link(url)
-            if dl: logger.info(f"        [PRO] FINAL DL (GDShare): {dl}")
         elif 'GDFLIX' in srv:
             dl = self._get_gdflix_link(url)
-            if dl: logger.info(f"        [PRO] FINAL DL (GDFlix): {dl}")
         elif 'FILEPRESS' in srv:
             dl = self._get_filepress_link(url)
-            if dl: logger.info(f"        [PRO] FINAL DL (FilePress): {dl}")
+        
+        if dl:
+            logger.info(f"        [PRO] FINAL DL ({srv_name}): {dl}")
+        return dl
 
     def get_episode_info(self, url):
         """Deep scans post page for the latest Hindi/Multi episode."""
@@ -268,10 +286,14 @@ class HindiAnimeZone:
     def process_legacy_page(self, soup):
         seen = set()
         q_map = self._get_quality_links(soup, seen)
+        downloads = []
         for q, data in q_map.items():
             logger.info(f"\n[*] QUALITY: {data['label']}")
             links = self.bypass_gate(data['url'])
             if links:
                 for s, l in links.items(): 
-                    logger.info(f"    {s}: {l}")
-                    self.get_final_link(s, l)
+                    final_link = self.get_final_link(s, l)
+                    if final_link:
+                        downloads.append({"label": data['label'], "link": final_link, "server": s})
+        
+        return [{"episode": "Content", "downloads": downloads}] if downloads else []

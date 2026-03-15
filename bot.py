@@ -38,6 +38,9 @@ async def safe_edit(message: Message, text: str, **kwargs):
     except MessageNotModified:
         pass
     except FloodWait as e:
+        if e.value > 15: # If wait is too long, just skip this update
+            logger.warning(f"FloodWait too long ({e.value}s). Skipping edit.")
+            return
         logger.warning(f"FloodWait hit: Waiting {e.value} seconds...")
         await asyncio.sleep(e.value)
         try:
@@ -317,52 +320,102 @@ async def get_cmd(client, message):
         logger.error(f"Error in get_cmd: {e}", exc_info=True)
         await status_msg.edit(f"❌ Error occurred: {str(e)}")
 
+def parse_quality(label):
+    """Extracts numeric quality from label for sorting."""
+    match = re.search(r'(\d+)', str(label))
+    if match:
+        return int(match.group(1))
+    return 0
+
+def sort_qualities(downloads):
+    """Sorts download objects from low to high quality."""
+    return sorted(downloads, key=lambda x: parse_quality(x.get('label', '')))
+
+async def process_episode_batch(client, message, episode_data, status_msg, total_eps, current_idx):
+    """Processes all qualities for a single episode together."""
+    ep_name = episode_data.get("episode", "Unknown Episode")
+    downloads = sort_qualities(episode_data.get("downloads", []))
+    
+    if not downloads:
+        logger.warning(f"No downloads for episode: {ep_name}")
+        return
+    
+    q_labels = [d.get('label', 'N/A') for d in downloads]
+    logger.info(f"Processing Ep {current_idx}/{total_eps} with qualities: {q_labels}")
+    
+    for q_idx, dl_obj in enumerate(downloads, 1):
+        dl_url = dl_obj.get('link')
+        quality_label = dl_obj.get('label', f'Q{q_idx}')
+        
+        # Clean up URL if needed
+        if isinstance(dl_url, str) and ': http' in dl_url:
+            dl_url = 'http' + dl_url.split(': http')[1].strip()
+            
+        if not dl_url: continue
+        
+        file_name = f"download_{message.id}_{current_idx}_{quality_label.replace(' ', '_')}.mkv"
+        
+        # Update status message to show which quality of which episode is being handled
+        qual_status = " | ".join([f"**{q}**" if q == quality_label else q for q in q_labels])
+        await safe_edit(status_msg, f"🚀 **Processing Ep {current_idx}/{total_eps}**\nEP: `{ep_name}`\nQualities: {qual_status}\n\n📥 **Downloading {quality_label}...**")
+        
+        # Get metadata for the download
+        metadata = dl_obj.get('metadata', {})
+        ref = metadata.get("referer") or episode_data.get("referer")
+        cookies = metadata.get("cookies") or episode_data.get("cookies")
+        ua = metadata.get("user_agent") or episode_data.get("user_agent")
+        
+        success = await download_file(dl_url, file_name, status_msg, referer=ref, cookies=cookies, user_agent=ua)
+        if not success:
+            await safe_edit(status_msg, f"❌ Failed to download: {ep_name} [{quality_label}]")
+            continue
+            
+        await safe_edit(status_msg, f"⚙️ **Extracting Metadata Ep {current_idx}/{total_eps} [{quality_label}]...**")
+        width, height, duration = await get_video_metadata(file_name)
+        thumb_path = await generate_thumbnail(file_name, duration)
+        
+        await safe_edit(status_msg, f"📤 **Uploading Ep {current_idx}/{total_eps} [{quality_label}]...**")
+        start_time = time.time()
+        
+        source = "RareAnimes" if "rareanime" in file_name else "HindiAnimeZone"
+        
+        try:
+            await client.send_video(
+                chat_id=message.chat.id,
+                video=file_name,
+                caption=f"{ep_name} [{quality_label}] via @{source}",
+                duration=duration,
+                width=width,
+                height=height,
+                thumb=thumb_path,
+                progress=progress_for_pyrogram,
+                progress_args=(f"📤 **Uploading Ep {current_idx} [{quality_label}]...**", status_msg, start_time)
+            )
+        except Exception as e:
+            logger.error(f"Upload failed: {e}")
+            await message.reply(f"❌ Upload failed for {ep_name} [{quality_label}]: {str(e)}")
+            
+        try:
+            if os.path.exists(file_name): os.remove(file_name)
+            if thumb_path and os.path.exists(thumb_path): os.remove(thumb_path)
+        except: pass
+
 async def handle_hindianime(client, message, url, selection, status_msg):
     try:
         logger.info(f"Step 3: Starting HindiAnimeZone bypass for URL: {url}")
-        def bypass_func():
-            f = io.StringIO()
-            with redirect_stdout(f):
-                bypasser = HindiAnimeZone()
-                bypasser.pro_main_bypass(url, selection=selection)
-            return f.getvalue()
+        bypasser = HindiAnimeZone()
+        episodes = await asyncio.to_thread(bypasser.pro_main_bypass, url, selection=selection)
             
-        output = await asyncio.to_thread(bypass_func)
-        logger.info("HindiAnimeZone bypass output:\n" + output)
-        
-        links = []
-        for line in output.split('\n'):
-            if '[PRO] FINAL DL' in line:
-                links.append(line.split('): ')[1].strip() if '): ' in line else line.split(': ')[1].strip())
-            
-        if not links:
-            logger.warning("Step 4 Failed: No download links found in bypass output.")
+        if not episodes:
+            logger.warning("Step 4 Failed: No download links found.")
             return await status_msg.edit("❌ Koi download links nahi mile.")
             
-        logger.info(f"Step 4: Extracted {len(links)} download links.")
-        await status_msg.edit(f"✅ Found {len(links)} links. Downloading and uploading...")
+        total = len(episodes)
+        logger.info(f"Step 4: Extracted {total} episodes with structured qualities.")
+        await status_msg.edit(f"✅ Found {total} episodes. Processing qualities...")
         
-        for idx, dl_url in enumerate(links, 1):
-            file_name = f"hindianime_{message.id}_{idx}.mkv"
-            await status_msg.edit(f"📥 **Downloading Part {idx}/{len(links)}...**")
-            
-            # For HindiAnimeZone, referer can be the original page or the gate url
-            success = await download_file(dl_url, file_name, status_msg, referer=url)
-            if not success: continue
-            
-            logger.info(f"Step 6: Upload to Telegram started -> {file_name}")
-            await status_msg.edit(f"📤 **Uploading Part {idx}/{len(links)}...**")
-            start_time = time.time()
-            
-            await client.send_document(
-                chat_id=message.chat.id,
-                document=file_name,
-                caption=f"Part {idx} via @HindiAnimeZone",
-                progress=progress_for_pyrogram,
-                progress_args=(f"📤 **Uploading Part {idx}...**", status_msg, start_time)
-            )
-            os.remove(file_name)
-            logger.info(f"Step 7: Upload complete and file deleted -> {file_name}")
+        for idx, ep in enumerate(episodes, 1):
+            await process_episode_batch(client, message, ep, status_msg, total, idx)
             
         await status_msg.delete()
         logger.info("Process completed successfully for HindiAnimeZone.")
@@ -374,7 +427,6 @@ async def handle_hindianime(client, message, url, selection, status_msg):
 async def handle_rareanime(client, message, url, selection, status_msg):
     try:
         logger.info(f"Step 3: Starting RareAnimes bypass for URL: {url}")
-        # RareAnimes selection needs start/end
         ep_start, ep_end = None, None
         if selection:
             ep_start = min(selection)
@@ -397,69 +449,17 @@ async def handle_rareanime(client, message, url, selection, status_msg):
             
         total = len(episodes)
         logger.info(f"Step 4: Found {total} episodes to process.")
-        await safe_edit(status_msg, f"✅ Found {total} episodes. Downloading and uploading...")
+        await safe_edit(status_msg, f"✅ Found {total} episodes. Processing qualities...")
         
         for idx, ep in enumerate(episodes, 1):
-            downloads = ep.get("downloads", [])
-            if not downloads: 
-                logger.warning(f"No download link for episode: {ep.get('episode', 'Unknown')}")
-                continue
+            await process_episode_batch(client, message, ep, status_msg, total, idx)
             
-            # Loop through all available qualities
-            for q_idx, dl_obj in enumerate(downloads, 1):
-                dl_url = dl_obj.get('link') if isinstance(dl_obj, dict) else dl_obj
-                quality_label = dl_obj.get('label', f'Q{q_idx}') if isinstance(dl_obj, dict) else f'Q{q_idx}'
-                
-                # Clean up the URL if needed
-                if isinstance(dl_url, str) and ': http' in dl_url:
-                    dl_url = 'http' + dl_url.split(': http')[1].strip()
-                
-                if not dl_url:
-                    logger.warning(f"Empty download URL for episode: {ep.get('episode')} - Quality: {quality_label}")
-                    continue
-                    
-                file_name = f"rareanime_{message.id}_{idx}_{quality_label}.mkv"
-                logger.info(f"Step 4: Episode {idx} ({quality_label}) link extracted successfully.")
-                await safe_edit(status_msg, f"📥 **Downloading Ep {idx}/{total} [{quality_label}]...**\n{ep['episode']}")
-                
-                # Use metadata from RareAnimes result if available
-                metadata = dl_obj.get('metadata', {}) if isinstance(dl_obj, dict) else {}
-                ref = metadata.get("referer") or ep.get("referer")
-                cookies = metadata.get("cookies") or ep.get("cookies")
-                ua = metadata.get("user_agent") or ep.get("user_agent")
-                
-                success = await download_file(dl_url, file_name, status_msg, referer=ref, cookies=cookies, user_agent=ua)
-                if not success: 
-                    await safe_edit(status_msg, f"❌ Failed to download: {ep['episode']} [{quality_label}]")
-                    continue
-                
-                logger.info(f"Step 6: Upload to Telegram started -> {file_name}")
-                await safe_edit(status_msg, f"⚙️ **Extracting Metadata Ep {idx}/{total} [{quality_label}]...**")
-                
-                width, height, duration = await get_video_metadata(file_name)
-                thumb_path = await generate_thumbnail(file_name, duration)
-                
-                await safe_edit(status_msg, f"📤 **Uploading Ep {idx}/{total} [{quality_label}]...**")
-                start_time = time.time()
-                await client.send_video(
-                    chat_id=message.chat.id,
-                    video=file_name,
-                    caption=f"{ep['episode']} [{quality_label}] via RareAnimes",
-                    duration=duration,
-                    width=width,
-                    height=height,
-                    thumb=thumb_path,
-                    progress=progress_for_pyrogram,
-                    progress_args=(f"📤 **Uploading Ep {idx} [{quality_label}]...**", status_msg, start_time)
-                )
-                
-                try:
-                    os.remove(file_name)
-                    if thumb_path and os.path.exists(thumb_path):
-                        os.remove(thumb_path)
-                    logger.info(f"Step 7: Upload complete and files deleted -> {file_name}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete files for {file_name}: {e}")
+        await status_msg.delete()
+        logger.info("Process completed successfully for RareAnimes.")
+            
+    except Exception as e:
+        logger.error(f"RareAnimes Error: {e}", exc_info=True)
+        await status_msg.edit(f"❌ RareAnimes Error: {str(e)}")
             
         await status_msg.delete()
         logger.info("Process completed successfully for RareAnimes.")
