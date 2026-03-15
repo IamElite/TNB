@@ -72,26 +72,30 @@ class RareAnimes:
 
     def get_links(self, url: str, ep_start: Optional[int] = None, ep_end: Optional[int] = None) -> Dict[str, Any]:
         """Main entry point to extract direct links from a series page."""
-        logger.info(f"[*] Analyzing Series: {url}")
+        logger.info(f"Step 1: Analyzing Series: {url}")
         try:
             self.init_session()
             resp = self.session.get(url, timeout=20)
             if resp.status_code != 200:
+                logger.error(f"Step 1 Error: Failed to load page (Status {resp.status_code})")
                 return {"error": f"Failed to load page (Status {resp.status_code})", "episodes": []}
                 
             soup = BeautifulSoup(resp.text, "html.parser")
             series_info = self._scrape_series_metadata(soup, url)
             
+            logger.info("Step 2: Extracting episodes from page content...")
             raw_eps = self._extract_episodes(resp.text, url)
             if not raw_eps:
+                logger.error("Step 2 Error: No episodes found on page")
                 return {"error": "No episodes found on page", "episodes": []}
 
             # Range-based episode selection
             selected_eps = self._filter_episodes(raw_eps, ep_start, ep_end)
             
+            logger.info(f"Step 3: Found {len(selected_eps)} episodes to process.")
             results = []
             for i, ep in enumerate(selected_eps, 1):
-                logger.info(f"[*] Processing Episode {i}/{len(selected_eps)}: {ep['label']}")
+                logger.info(f"Step 4: Processing Episode {i}/{len(selected_eps)}: {ep['label']}")
                 self.last_mq_referer = None
                 links = self._try_mirrors(ep["mirrors"])
                 
@@ -104,12 +108,14 @@ class RareAnimes:
                     "downloads": links if links else []
                 }
                 if not links:
+                    logger.warning(f"Step 4 Warning: Failed to bypass any mirror for {ep['label']}")
                     entry["error"] = "Failed to bypass any mirror"
                 results.append(entry)
 
+            logger.info("Step 5: Analysis complete.")
             return {"episodes": results, "series_info": series_info}
         except Exception as e:
-            logger.error(f"[!] get_links error: {e}", exc_info=True)
+            logger.error(f"Error in get_links: {e}", exc_info=True)
             return {"error": str(e), "episodes": [], "series_info": ""}
 
     def _scrape_series_metadata(self, soup: BeautifulSoup, url: str) -> str:
@@ -117,16 +123,22 @@ class RareAnimes:
         # 1. Look for Full Name in the Series Info section
         info_section = soup.find(string=lambda t: t and 'Anime Series Info' in t)
         if info_section:
-            parent = info_section.find_parent(["h5", "h4", "p", "div"])
+            parent = info_section.find_parent(["h5", "h4", "p", "div", "strong"])
             if parent:
-                # Scan next few siblings for "Full Name:"
+                # Scan next strings/tags for "Full Name:"
                 curr = parent
-                for _ in range(12):
-                    curr = curr.next_sibling
+                for _ in range(25):
+                    curr = curr.next_element
                     if not curr: break
                     text = curr.get_text(strip=True) if hasattr(curr, "get_text") else str(curr).strip()
                     if "Full Name:" in text:
-                        return text.split("Full Name:")[1].strip()
+                        # Extract the value which might be in the same tag or next string
+                        if ":" in text and len(text.split(":", 1)[1]) > 1:
+                            return text.split(":", 1)[1].strip()
+                        # If next element contains the value
+                        nxt = curr.next_element
+                        if nxt:
+                            return nxt.get_text(strip=True) if hasattr(nxt, "get_text") else str(nxt).strip()
 
         # 2. Fallback to H1 or Title tag
         h1 = soup.find("h1")
@@ -146,6 +158,9 @@ class RareAnimes:
         potential_links = []
         seen_urls = set()
         
+        # We need a fallback counter for unidentified episodes to keep them separate
+        fallback_counter = 1
+
         for a in soup.find_all("a", href=True):
             href = a["href"]
             if href in seen_urls: continue
@@ -157,20 +172,36 @@ class RareAnimes:
             seen_urls.add(href)
             
             label = self._get_label_from_tag(a)
+            if label == "Episode/Download":
+                label = f"Episode {fallback_counter}"
+                fallback_counter += 1
+                
             potential_links.append({"url": href, "label": label, "is_hub": is_hub})
 
         # Process hubs and group
+        # If we have many links with same generic label, we should keep them separate if they are distinct URLs
         final_links = []
         for item in potential_links:
             if item["is_hub"]:
-                final_links.extend(self._extract_hub_links(item["url"]))
+                hub_eps = self._extract_hub_links(item["url"])
+                if hub_eps:
+                    final_links.extend(hub_eps)
+                else:
+                    final_links.append(item)
             else:
                 final_links.append(item)
                 
-        # Group by label
+        # Group by label but ONLY if they are mirrors of the SAME episode
+        # In RareAnimes, different links usually mean different qualities OR mirrors.
+        # If labels are like "Episode 1", "Episode 2", we should NOT group them.
+        # If labels are identical, they likely are mirrors.
         grouped: Dict[str, List[Dict[str, str]]] = {}
         for link in final_links:
-            grouped.setdefault(link["label"], []).append({"url": link["url"], "referer": referer})
+            label = link["label"]
+            # Optimization: If label is generic and we already have it, maybe it's the next ep?
+            # But the 'fallback_counter' already made them unique.
+            # Mirror grouping logic:
+            grouped.setdefault(label, []).append({"url": link["url"], "referer": referer})
             
         # Return structured list
         return [{"label": k, "mirrors": v} for k, v in grouped.items()]
@@ -182,13 +213,19 @@ class RareAnimes:
             if r.status_code != 200: return []
             soup = BeautifulSoup(r.text, "html.parser")
             eps = []
+            f_count = 1
             for a in soup.find_all("a", href=True):
                 if "codedew.com/zipper/" in a["href"]:
-                    label = a.get_text(strip=True)
-                    m = self.EP_REGEX.search(label)
+                    text = a.get_text(strip=True)
+                    m = self.EP_REGEX.search(text)
+                    if m:
+                        label = m.group(1).title()
+                    else:
+                        label = f"Episode {f_count}"
+                        f_count += 1
                     eps.append({
                         "url": a["href"], 
-                        "label": m.group(1).title() if m else label, 
+                        "label": label, 
                         "is_hub": False
                     })
             return eps
@@ -197,37 +234,46 @@ class RareAnimes:
 
     def _get_label_from_tag(self, tag: Any) -> str:
         """Extracts a descriptive episode label by looking at the tag and its surroundings."""
-        # 1. Link text itself
-        text = tag.get_text(strip=True)
-        if len(text) > 3:
-            m = self.EP_REGEX.search(text)
-            if m: return m.group(1).title()
+        # Check text within the <a> tag
+        text = tag.get_text(" ", strip=True)
+        
+        # Try to find episode pattern in text
+        m = self.EP_REGEX.search(text)
+        if m: return m.group(1).title()
             
-        # 2. Parent container text
-        parent = tag.find_parent(["p", "div", "li"])
-        if parent:
+        # Check parent and siblings (common for sites where links are just 'Download' buttons)
+        curr = tag
+        for _ in range(3):
+            parent = curr.find_parent(["p", "div", "li", "td", "tr"])
+            if not parent: break
             p_text = parent.get_text(" ", strip=True)
             m = self.EP_REGEX.search(p_text)
-            if m and len(p_text) < 150: return m.group(1).title()
+            if m and len(p_text) < 150: 
+                return m.group(1).title()
+            curr = parent
             
         return "Episode/Download"
 
     def _filter_episodes(self, episodes: List[Dict], start: Optional[int], end: Optional[int]) -> List[Dict]:
         """Filters episodes based on numeric range."""
-        # Identification function
         def get_num(ep):
             m = re.search(r'(\d+)', ep["label"])
             return int(m.group(1)) if m else 0
             
-        # Sort first
-        episodes.sort(key=get_num)
-        
-        if start is None:
-            return episodes
-            
-        s_idx = max(0, start - 1)
-        e_idx = len(episodes) if end is None else min(len(episodes), end)
-        return episodes[s_idx:e_idx]
+        # Filter first, then sort
+        filtered = []
+        if start is not None:
+            for ep in episodes:
+                num = get_num(ep)
+                if num == 0: # Non-numbered OVA/Movie
+                    filtered.append(ep)
+                elif start <= num <= (end or float('inf')):
+                    filtered.append(ep)
+        else:
+            filtered = episodes
+
+        filtered.sort(key=get_num)
+        return filtered
 
     def _try_mirrors(self, mirrors: List[Dict[str, str]]) -> Optional[List[Dict]]:
         """Attempts to bypass mirrors until successful."""
@@ -240,7 +286,8 @@ class RareAnimes:
         """Bypasses the zipper multi-step redirect to reach the multi-quality page."""
         try:
             curr_url, curr_ref = url, referer
-            for step in range(1, 6):
+            logger.info(f"[*] Bypassing zipper gate for: {url}")
+            for step in range(1, 10): # Increased steps for robustness
                 headers = {
                     "Referer": curr_ref,
                     "Sec-Fetch-Site": "cross-site" if "codedew.com" in curr_url else "same-origin",
@@ -249,48 +296,62 @@ class RareAnimes:
                 }
                 
                 resp = self.session.get(curr_url, headers=headers, timeout=15)
-                if resp.status_code != 200: return None
+                if resp.status_code != 200: 
+                    logger.debug(f"Zipper step {step} failed: {resp.status_code}")
+                    return None
                 
                 # Check for the multi-quality token
                 token_match = re.search(r'name="rtiwatch"\s+value="([^"]+)"', resp.text)
                 if token_match and token_match.group(1) != "notranslate":
                     mq_url = f"{self.MQ_BASE_URL}downlead/{token_match.group(1)}/"
                     self.last_mq_referer = mq_url
+                    logger.info(f"[+] Multi-quality token found: {token_match.group(1)}")
                     return self.process_multiquality(mq_url)
                 
                 # Find the 'Continue' button for next step
                 soup = BeautifulSoup(resp.text, "html.parser")
                 next_url = self._find_next_button(soup)
-                if not next_url: return None
+                if not next_url: 
+                    logger.debug(f"Zipper step {step}: No next button found")
+                    return None
                 
                 curr_ref, curr_url = curr_url, next_url
-                time.sleep(1.0)
+                time.sleep(0.8)
         except Exception as e:
             logger.debug(f"Zipper error: {e}")
         return None
 
     def _find_next_button(self, soup: BeautifulSoup) -> Optional[str]:
         """Locates the 'Continue' or 'Next' button URL."""
-        # Priority 1: Specific IDs
-        for bid in ["goBtn", "mainActionBtn", "btn-main"]:
-            btn = soup.find("a", id=bid)
+        # Priority 1: Specific IDs/Classes
+        for selector in ["a#goBtn", "a#mainActionBtn", "a.btn-main", "a.btn-continue"]:
+            btn = soup.select_one(selector)
             if btn and btn.get("href"):
                 return urljoin(self.ROOT_URL, btn["href"])
         
         # Priority 2: Text matching
         for a in soup.find_all("a", href=True):
             text = a.get_text(strip=True).lower()
-            if any(kw in text for kw in ["continue", "next", "get link", "skip"]):
+            if any(kw in text for kw in ["continue", "next", "get link", "skip", "verify", "human"]):
                 return urljoin(self.ROOT_URL, a["href"])
+        
+        # Priority 3: Form submission buttons
+        form = soup.find("form")
+        if form and form.get("action"):
+            return urljoin(self.ROOT_URL, form["action"])
+            
         return None
 
     def process_multiquality(self, url: str) -> Optional[List[Dict]]:
         """Handles the multi-quality page API to get direct links."""
         try:
+            logger.info(f"[*] Fetching final links from MQ page: {url}")
             resp = self.session.get(url, headers={"Referer": self.ROOT_URL}, timeout=15)
             # Extract JuicyData JSON
             jd = self._extract_juicy_data(resp.text)
-            if not jd or not jd.get("token"): return None
+            if not jd or not jd.get("token"): 
+                logger.error("Failed to extract JuicyData or token")
+                return None
             
             # API interaction
             token = jd["token"]
@@ -301,7 +362,7 @@ class RareAnimes:
                 ping_url = urljoin(self.MQ_BASE_URL, jd["routes"]["ping"])
                 self.session.post(ping_url, headers={"Referer": url}, timeout=5)
             
-            time.sleep(1.2)
+            time.sleep(1.0)
             api_resp = self.session.post(
                 links_api,
                 headers={
@@ -318,6 +379,7 @@ class RareAnimes:
                 results = []
                 for q in data["qualities"]:
                     label = q.get("label") or q.get("quality") or "N/A"
+                    logger.info(f"  [+] Found quality: {label} ({q.get('size')})")
                     results.append({
                         "label": label,
                         "size": q.get("size"),
