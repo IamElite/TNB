@@ -3,7 +3,7 @@ FROM python:3.10-slim
 
 # Install system dependencies (ffmpeg) and clean up apt cache to keep image small
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg && \
+    apt-get install -y --no-install-recommends ffmpeg aria2 && \
     rm -rf /var/lib/apt/lists/*
 
 # Set the working directory

@@ -120,9 +120,7 @@ def time_formatter(milliseconds: int) -> str:
 async def progress_for_pyrogram(current, total, ud_type, message, start):
     now = time.time()
     diff = now - start
-    
-    # Progress specifically needs more frequent updates than typical status logs
-    # but still needs throttling. We'll use safe_edit's built-in throttle.
+    if diff < 1.0: return # Avoid division by zero and too early updates
     
     is_done = (current == total)
     percentage = current * 100 / total if total else 0
@@ -131,22 +129,21 @@ async def progress_for_pyrogram(current, total, ud_type, message, start):
     time_to_completion = round((total - current) / speed) * 1000 if speed > 0 else 0
     estimated_total_time = elapsed_time + time_to_completion
 
-    elapsed_time = time_formatter(elapsed_time)
-    estimated_total_time = time_formatter(estimated_total_time)
+    elapsed_time_str = time_formatter(elapsed_time)
+    eta_str = time_formatter(time_to_completion)
 
     progress = "[{0}{1}] \n**Progress**: {2}%\n".format(
         ''.join(["█" for i in range(math.floor(percentage / 10))]),
         ''.join(["░" for i in range(10 - math.floor(percentage / 10))]),
         round(percentage, 2))
 
-    tmp = progress + "{0} of {1}\n**Speed:** {2}/s\n**ETA:** {3}\n".format(
+    tmp = progress + "**Processed**: {0} of {1}\n**Speed:** {2}/s\n**ETA:** {3}\n".format(
         humanbytes(current),
         humanbytes(total),
         humanbytes(speed),
-        estimated_total_time if estimated_total_time != '' else "0 s"
+        eta_str
     )
     
-    # Final progress always forced
     await safe_edit(message, f"{ud_type}\n{tmp}", force=is_done)
 
 async def get_video_metadata(filepath):
@@ -193,92 +190,115 @@ async def generate_thumbnail(filepath, duration):
     return None
 
 async def download_file(url, file_name, status_msg, referer=None, cookies=None, user_agent=None):
-    start_t = time.time()
     logger.info(f"Step 5: File download started -> {file_name}")
+    start_t = time.time()
     
+    # Try aria2c first
+    try:
+        cmd = [
+            "aria2c", "-x", "16", "-s", "16", "-k", "1M",
+            "--user-agent", user_agent or USER_AGENT,
+            "--out", file_name,
+            "--file-allocation=none",
+            "--summary-interval=1",
+            url
+        ]
+        if referer: cmd.extend(["--referer", referer])
+        if cookies:
+            cookie_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
+            cmd.extend(["--header", f"Cookie: {cookie_str}"])
+
+        process = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+        )
+
+        while True:
+            line = await process.stdout.readline()
+            if not line: break
+            line = line.decode('utf-8', 'ignore').strip()
+            
+            # aria2c output example: [#2089b0 1.2MiB/3.4MiB(35%) CN:1 SPD:648KiB ETA:3s]
+            match = re.search(r'\((\d+)%\).*?SPD:([\d\.]+[KMG]i?B).*?ETA:(\d+s|[\d\w]+)', line)
+            if match:
+                perc = match.group(1)
+                speed = match.group(2).replace('i', '') + '/s'
+                eta = match.group(3)
+                
+                await safe_edit(
+                    status_msg, 
+                    f"📥 **Downloading (aria2c)...**\n"
+                    f"**Progress**: {perc}%\n"
+                    f"**Speed**: {speed}\n"
+                    f"**ETA**: {eta}",
+                    force=False
+                )
+        
+        await process.wait()
+        if process.returncode == 0 and os.path.exists(file_name):
+            logger.info(f"aria2c download complete -> {file_name}")
+            return True
+        else:
+            logger.warning(f"aria2c failed (code {process.returncode}). Falling back to curl_cffi...")
+    except Exception as e:
+        logger.warning(f"aria2c setup error: {e}. Falling back to curl_cffi...")
+
+    # Fallback to curl_cffi with improved progress
     try:
         state = {"downloaded": 0, "total": 0, "done": False, "error": None}
         
         def sync_download():
             try:
-                # Use curl_cffi for perfect impersonation and session handling
                 with currequests.Session(impersonate="chrome110") as session:
-                    # Standard browser headers for download
                     session.headers.update({
                         "User-Agent": user_agent or USER_AGENT,
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                        "Accept": "*/*",
                         "Accept-Language": "en-US,en;q=0.9",
-                        "Connection": "keep-alive",
-                        "Upgrade-Insecure-Requests": "1"
+                        "Connection": "keep-alive"
                     })
-                    
-                    if referer:
-                        session.headers['Referer'] = referer
-                    
-                    if cookies:
-                        session.cookies.update(cookies)
+                    if referer: session.headers['Referer'] = referer
+                    if cookies: session.cookies.update(cookies)
                         
-                    logger.info(f"[*] Starting download from: {url[:60]}...")
-                    
-                    # Attempt 1: Standard request with provided context
                     r = session.get(url, stream=True, timeout=60, allow_redirects=True)
-                    
-                    if r.status_code == 403:
-                        logger.warning("Attempt 1: HTTP 403. Retrying without cookies...")
-                        session.cookies.clear()
-                        r = session.get(url, stream=True, timeout=60, allow_redirects=True)
-                    
-                    if r.status_code == 403 and session.headers.get("Referer"):
-                        logger.warning("Attempt 2: HTTP 403. Retrying without referer...")
-                        session.headers.pop("Referer", None)
-                        r = session.get(url, stream=True, timeout=60, allow_redirects=True)
-                    
                     if r.status_code != 200:
-                        logger.error(f"[!] Download failed after retries. Status: {r.status_code}")
-                        state["error"] = f"HTTP {r.status_code}"
-                        return
+                        state["error"] = f"HTTP {r.status_code}"; return
                     
                     state["total"] = int(r.headers.get('content-length', 0))
-                    logger.info(f"[+] Download success. Size: {humanbytes(state['total'])}")
-                    
                     with open(file_name, 'wb') as f:
                         for chunk in r.iter_content(chunk_size=1024 * 1024):
                             if chunk:
                                 f.write(chunk)
                                 state["downloaded"] += len(chunk)
-            except Exception as e:
-                state["error"] = str(e)
-            finally:
-                state["done"] = True
+            except Exception as e: state["error"] = str(e)
+            finally: state["done"] = True
 
         loop = asyncio.get_running_loop()
         task = loop.run_in_executor(None, sync_download)
         
-        last_update = time.time()
         while not state["done"]:
-            await asyncio.sleep(2)
-            now = time.time()
-            if now - last_update > 7 and state["total"] > 0: # Increased to 7s
-                last_update = now
-                percentage = state["downloaded"] * 100 / state["total"] if state["total"] else 0
+            await asyncio.sleep(2.5)
+            if state["total"] > 0:
+                now = time.time()
+                diff = now - start_t
+                perc = state["downloaded"] * 100 / state["total"]
+                speed = state["downloaded"] / diff if diff > 0 else 0
+                eta_sec = (state["total"] - state["downloaded"]) / speed if speed > 0 else 0
+                
                 await safe_edit(
                     status_msg,
-                    f"📥 **Downloading...** {round(percentage, 2)}%\n"
-                    f"{humanbytes(state['downloaded'])} / {humanbytes(state['total'])}",
+                    f"📥 **Downloading (fallback)...** {round(perc, 2)}%\n"
+                    f"**Size**: {humanbytes(state['downloaded'])} / {humanbytes(state['total'])}\n"
+                    f"**Speed**: {humanbytes(speed)}/s\n"
+                    f"**ETA**: {time_formatter(eta_sec*1000)}",
                     force=False
                 )
                 
-        await task  # Wait for executor thread to finish
-        
+        await task
         if state["error"]:
-            logger.error(f"Download failed: {state['error']}")
             await safe_edit(status_msg, f"❌ Download failed: {state['error']}", force=True)
             return False
-            
-        logger.info(f"Step 5: File download complete -> {file_name}")
         return True
     except Exception as e:
-        logger.error(f"Step 5: Download error -> {str(e)}", exc_info=True)
+        logger.error(f"Download fallback error: {str(e)}", exc_info=True)
         await safe_edit(status_msg, f"❌ Download failed: {str(e)}", force=True)
         return False
 
