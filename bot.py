@@ -357,6 +357,65 @@ async def download_file(url, file_name, status_msg, referer=None, cookies=None, 
     logger.info(f"Step 5: File download started -> {file_name}")
     start_t = time.time()
     
+    # Attempt high-speed download with aria2c first
+    try:
+        # Optimization: use 16 connections for max speed
+        cmd = [
+            "aria2c", "-x", "16", "-s", "16", "-k", "1M",
+            "--user-agent", user_agent or USER_AGENT,
+            "--out", file_name,
+            "--file-allocation=none",
+            "--summary-interval=1",
+            "--continue=true",
+            url
+        ]
+        if referer: cmd.extend(["--referer", referer])
+        if cookies:
+            cookie_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
+            cmd.extend(["--header", f"Cookie: {cookie_str}"])
+
+        process = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+        )
+
+        while True:
+            line = await process.stdout.readline()
+            if not line: break
+            line = line.decode('utf-8', 'ignore').strip()
+            
+            # aria2c output example: [#2089b0 1.2MiB/3.4MiB(35%) CN:1 SPD:648KiB ETA:3s]
+            match = re.search(r'([\d\.]+[KMG]i?B)/([\d\.]+[KMG]i?B)\((\d+)%\).*?SPD:([\d\.]+[KMG]i?B).*?ETA:(\d+s|[\d\w]+)', line)
+            if match:
+                curr_size = match.group(1).replace('i', '')
+                total_size = match.group(2).replace('i', '')
+                perc_val = int(match.group(3))
+                speed = match.group(4).replace('i', '') + '/s'
+                eta = match.group(5)
+                
+                # Progress bar logic
+                filled = "█" * (perc_val // 10)
+                empty = "░" * (10 - (perc_val // 10))
+                bar = f"[{filled}{empty}]"
+                
+                await safe_edit(
+                    status_msg, 
+                    f"📥 **Downloading...**\n {bar} {perc_val}%\n"
+                    f"**Size**: {curr_size} / {total_size}\n"
+                    f"**Speed**: {speed}\n"
+                    f"**ETA**: {eta}",
+                    force=False
+                )
+        
+        await process.wait()
+        if process.returncode == 0 and os.path.exists(file_name):
+            logger.info(f"aria2c download complete -> {file_name}")
+            return True
+        else:
+            logger.warning(f"aria2c failed (code {process.returncode}). Falling back to curl_cffi...")
+    except Exception as e:
+        logger.warning(f"aria2c setup error: {e}. Falling back to curl_cffi...")
+
+    # Fallback to curl_cffi
     try:
         state = {"downloaded": 0, "total": 0, "done": False, "error": None}
         
