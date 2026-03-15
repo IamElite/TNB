@@ -32,20 +32,38 @@ logging.getLogger("pyrogram").setLevel(logging.WARNING)
 logging.getLogger("werkzeug").setLevel(logging.ERROR) # For Flask
 
 # Import your custom modules
-# Helper for safe message edits
-async def safe_edit(message: Message, text: str, **kwargs):
+# Helper for safe message edits with throttling
+EDIT_STATES = {} # {message_id: {"time": stamp, "text": content}}
+
+async def safe_edit(message: Message, text: str, force: bool = False, **kwargs):
+    now = time.time()
+    mid = message.id
+    
+    # Initialize state if not present
+    if mid not in EDIT_STATES:
+        EDIT_STATES[mid] = {"time": 0, "text": ""}
+        
+    # Throttling logic
+    if not force:
+        # Skip if text is same
+        if text == EDIT_STATES[mid]["text"]:
+            return
+        # Skip if too frequent (min 3 seconds)
+        if now - EDIT_STATES[mid]["time"] < 3.0:
+            return
+
     try:
         await message.edit(text, **kwargs)
+        EDIT_STATES[mid] = {"time": now, "text": text}
     except MessageNotModified:
-        pass
+        EDIT_STATES[mid]["text"] = text
     except FloodWait as e:
-        if e.value > 15: # If wait is too long, just skip this update
-            logger.warning(f"FloodWait too long ({e.value}s). Skipping edit.")
-            return
         logger.warning(f"FloodWait hit: Waiting {e.value} seconds...")
         await asyncio.sleep(e.value)
         try:
+            # Retry once with force
             await message.edit(text, **kwargs)
+            EDIT_STATES[mid] = {"time": time.time(), "text": text}
         except Exception: pass
     except Exception as e:
         logger.error(f"Safe edit failed: {e}")
@@ -102,31 +120,34 @@ def time_formatter(milliseconds: int) -> str:
 async def progress_for_pyrogram(current, total, ud_type, message, start):
     now = time.time()
     diff = now - start
-    if round(diff % 5.00) == 0 or current == total:
-        percentage = current * 100 / total if total else 0
-        speed = current / diff if diff > 0 else 0
-        elapsed_time = round(diff) * 1000
-        time_to_completion = round((total - current) / speed) * 1000 if speed > 0 else 0
-        estimated_total_time = elapsed_time + time_to_completion
+    
+    # Progress specifically needs more frequent updates than typical status logs
+    # but still needs throttling. We'll use safe_edit's built-in throttle.
+    
+    is_done = (current == total)
+    percentage = current * 100 / total if total else 0
+    speed = current / diff if diff > 0 else 0
+    elapsed_time = round(diff) * 1000
+    time_to_completion = round((total - current) / speed) * 1000 if speed > 0 else 0
+    estimated_total_time = elapsed_time + time_to_completion
 
-        elapsed_time = time_formatter(elapsed_time)
-        estimated_total_time = time_formatter(estimated_total_time)
+    elapsed_time = time_formatter(elapsed_time)
+    estimated_total_time = time_formatter(estimated_total_time)
 
-        progress = "[{0}{1}] \n**Progress**: {2}%\n".format(
-            ''.join(["█" for i in range(math.floor(percentage / 10))]),
-            ''.join(["░" for i in range(10 - math.floor(percentage / 10))]),
-            round(percentage, 2))
+    progress = "[{0}{1}] \n**Progress**: {2}%\n".format(
+        ''.join(["█" for i in range(math.floor(percentage / 10))]),
+        ''.join(["░" for i in range(10 - math.floor(percentage / 10))]),
+        round(percentage, 2))
 
-        tmp = progress + "{0} of {1}\n**Speed:** {2}/s\n**ETA:** {3}\n".format(
-            humanbytes(current),
-            humanbytes(total),
-            humanbytes(speed),
-            estimated_total_time if estimated_total_time != '' else "0 s"
-        )
-        try:
-            await message.edit(f"{ud_type}\n{tmp}")
-        except Exception:
-            pass
+    tmp = progress + "{0} of {1}\n**Speed:** {2}/s\n**ETA:** {3}\n".format(
+        humanbytes(current),
+        humanbytes(total),
+        humanbytes(speed),
+        estimated_total_time if estimated_total_time != '' else "0 s"
+    )
+    
+    # Final progress always forced
+    await safe_edit(message, f"{ud_type}\n{tmp}", force=is_done)
 
 async def get_video_metadata(filepath):
     try:
@@ -243,21 +264,22 @@ async def download_file(url, file_name, status_msg, referer=None, cookies=None, 
                 await safe_edit(
                     status_msg,
                     f"📥 **Downloading...** {round(percentage, 2)}%\n"
-                    f"{humanbytes(state['downloaded'])} / {humanbytes(state['total'])}"
+                    f"{humanbytes(state['downloaded'])} / {humanbytes(state['total'])}",
+                    force=False
                 )
                 
         await task  # Wait for executor thread to finish
         
         if state["error"]:
             logger.error(f"Download failed: {state['error']}")
-            await safe_edit(status_msg, f"❌ Download failed: {state['error']}")
+            await safe_edit(status_msg, f"❌ Download failed: {state['error']}", force=True)
             return False
             
         logger.info(f"Step 5: File download complete -> {file_name}")
         return True
     except Exception as e:
         logger.error(f"Step 5: Download error -> {str(e)}", exc_info=True)
-        await safe_edit(status_msg, f"❌ Download failed: {str(e)}")
+        await safe_edit(status_msg, f"❌ Download failed: {str(e)}", force=True)
         return False
 
 def parse_selection(args):
@@ -358,7 +380,11 @@ async def process_episode_batch(client, message, episode_data, status_msg, total
         
         # Update status message to show which quality of which episode is being handled
         qual_status = " | ".join([f"**{q}**" if q == quality_label else q for q in q_labels])
-        await safe_edit(status_msg, f"🚀 **Processing Ep {current_idx}/{total_eps}**\nEP: `{ep_name}`\nQualities: {qual_status}\n\n📥 **Downloading {quality_label}...**")
+        await safe_edit(
+            status_msg, 
+            f"🚀 **Processing Ep {current_idx}/{total_eps}**\nEP: `{ep_name}`\nQualities: {qual_status}\n\n📥 **Downloading {quality_label}...**",
+            force=True
+        )
         
         # Get metadata for the download
         metadata = dl_obj.get('metadata', {})
@@ -368,14 +394,14 @@ async def process_episode_batch(client, message, episode_data, status_msg, total
         
         success = await download_file(dl_url, file_name, status_msg, referer=ref, cookies=cookies, user_agent=ua)
         if not success:
-            await safe_edit(status_msg, f"❌ Failed to download: {ep_name} [{quality_label}]")
+            await safe_edit(status_msg, f"❌ Failed to download: {ep_name} [{quality_label}]", force=True)
             continue
             
-        await safe_edit(status_msg, f"⚙️ **Extracting Metadata Ep {current_idx}/{total_eps} [{quality_label}]...**")
+        await safe_edit(status_msg, f"⚙️ **Extracting Metadata Ep {current_idx}/{total_eps} [{quality_label}]...**", force=True)
         width, height, duration = await get_video_metadata(file_name)
         thumb_path = await generate_thumbnail(file_name, duration)
         
-        await safe_edit(status_msg, f"📤 **Uploading Ep {current_idx}/{total_eps} [{quality_label}]...**")
+        await safe_edit(status_msg, f"📤 **Uploading Ep {current_idx}/{total_eps} [{quality_label}]...**", force=True)
         start_time = time.time()
         
         source = "RareAnimes" if "rareanime" in file_name else "HindiAnimeZone"
