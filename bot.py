@@ -195,8 +195,14 @@ def parse_filename(basename):
     name_clean = basename
     # Remove extension
     name_clean = re.sub(r'\.(mp4|mkv|avi|webm)$', '', name_clean, flags=re.I)
-    # Remove episode/season info
-    name_clean = re.sub(r'(S\d+|E\d+|Season\s*\d+|Episode\s*\d+|Ep\s*\d+)', '', name_clean, flags=re.I)
+    # Remove episode/season info (S01, E01, Season 1, etc.)
+    name_clean = re.sub(r'(S\d+|E\d+|Season\s*\d+|Episode\s*\d+|Ep[\.\s]*\d+)', '', name_clean, flags=re.I)
+    
+    # Also remove the specific episode number if found standalone
+    if data["episode"]:
+        # Match the episode number if it's surrounded by spaces or at ends
+        name_clean = re.sub(rf'\b0*{int(data["episode"])}\b', '', name_clean)
+        
     # Remove quality/year/tags
     name_clean = re.sub(r'\d{3,4}p', '', name_clean, flags=re.I)
     name_clean = clean_unwanted_tags(name_clean)
@@ -207,7 +213,7 @@ def parse_filename(basename):
         # Collapse multiple hyphens/dots/spaces
         name_clean = re.sub(r'[\.\-]{2,}', '-', name_clean)
         name_clean = re.sub(r'\s+', ' ', name_clean)
-        data["name"] = name_clean.strip()
+        data["name"] = name_clean.strip() or "Unknown"
         
     return data
 
@@ -251,27 +257,31 @@ async def get_audio_language(filepath):
 def make_caption(anime_name, filepath, size, duration, season_fallback=None, ep_fallback=None):
     """Generate professional Telegram caption."""
     # Use anime_name (the episode title from site) as primary info source
-    # because filepath is often a generic 'download_xxx.mkv'
     info = parse_filename(anime_name)
     
     # If info name is unknown, use the raw anime_name
     display_name = info['name'] if info['name'] not in ["Unknown", "Download"] else anime_name
     display_name = clean_unwanted_tags(display_name)
     
-    # Quality extraction - try anime_name first, then filepath
+    # Quality extraction
     quality = get_real_quality(anime_name)
-    if quality == "720p": # If default, check filepath
+    if quality == "720p":
         quality = get_real_quality(filepath)
     
-    # Fallbacks
+    # Season and Episode
     season = info.get('season') or (season_fallback.zfill(2) if season_fallback else None)
     episode = info.get('episode') or (ep_fallback.zfill(2) if ep_fallback else None)
     
     size_str = humanbytes(size)
     duration_str = time_formatter(duration * 1000)
     
+    # Consolidated Header: 🎬 Name | S01 | E06
+    header = f"🎬 **{display_name}**"
+    if season: header += f" | **S{season}**"
+    if episode: header += f" | **EP{episode}**"
+    
     if info['is_movie']:
-        cap = f"🎬 **{display_name}**"
+        cap = f"{header}"
         if info['year']: cap += f" ({info['year']})"
         cap += f"""
 ╭━━━━━━━━━━━━━━━━━━━╮
@@ -282,7 +292,7 @@ def make_caption(anime_name, filepath, size, duration, season_fallback=None, ep_
 │ ⏱️ **Duration:** {duration_str}
 ╰━━━━━━━━━━━━━━━━━━━╯"""
     else:
-        cap = f"🎬 **{display_name}**\n╭━━━━━━━━━━━━━━━━━━━╮"
+        cap = f"{header}\n╭━━━━━━━━━━━━━━━━━━━╮"
         if season:
             cap += f"\n│ 🏝️ **Season:** {season}"
         if episode:
