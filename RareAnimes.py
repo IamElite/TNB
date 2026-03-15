@@ -95,6 +95,31 @@ class RareAnimes:
                 title_tag = soup.find("title")
                 if title_tag:
                     series_info = title_tag.get_text(strip=True).split("|")[0].split("-")[0].strip()
+            
+            # Use URL slug if title is very short or generic
+            if len(series_info) < 5:
+                series_info = url.rstrip("/").split("/")[-1].replace("-", " ").title()
+
+            # [NEW] Robust "Full Name" Scraping from Anime Series Info section
+            full_name = ""
+            info_section = soup.find(string=lambda t: t and 'Anime Series Info' in t)
+            if info_section:
+                info_parent = info_section.find_parent(["h5", "h4", "p", "div"])
+                if info_parent:
+                    # Look for "Full Name:" in the next siblings
+                    curr = info_parent
+                    for _ in range(10): # Look ahead a few siblings
+                        curr = curr.next_sibling
+                        if not curr: break
+                        text = curr.get_text(strip=True) if hasattr(curr, 'get_text') else str(curr).strip()
+                        if "Full Name:" in text:
+                            full_name = text.split("Full Name:")[1].strip()
+                            logger.info(f"[*] Found Full Name in Info Section: {full_name}")
+                            break
+            
+            # If full_name found, prioritize it or append it to series_info
+            if full_name:
+                series_info = full_name
 
             raw_eps = self._extract_episodes(html, url)
             
@@ -457,25 +482,53 @@ class RareAnimes:
         return None
 
     def resolve_filename(self, url, referer=None, cookies=None):
-        """Resolves the real filename using Content-Disposition or URL path."""
-        headers = {"Referer": referer} if referer else {}
+        """Resolves the real filename using Content-Disposition or URL path with high-fidelity headers."""
+        headers = {
+            "Referer": referer or self.ROOT_URL,
+            "User-Agent": self.UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br, zstd",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Site": "cross-site",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Dest": "document",
+            "DNT": "1",
+            "Sec-CH-UA": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+            "Sec-CH-UA-Mobile": "?0",
+            "Sec-CH-UA-Platform": '"Windows"'
+        }
         try:
-            # Use curl_cffi for robust resolution
+            # Use curl_cffi for robust resolution, mimicking Chrome 124
             with currequests.Session(impersonate="chrome124") as session:
                 if cookies: session.cookies.update(cookies)
-                # Stream to only get headers without full body download
-                res = session.get(url, headers=headers, stream=True, allow_redirects=True, timeout=15)
                 
-                # 1. Content-Disposition
+                # 1. Try HEAD first (most efficient)
+                try:
+                    res = session.head(url, headers=headers, allow_redirects=True, timeout=12)
+                    cd = res.headers.get('Content-Disposition')
+                    filename = self.get_filename_from_cd(cd)
+                    if filename: return filename
+                except Exception as head_err:
+                    logger.debug(f"[!] HEAD failed for resolution: {head_err}")
+
+                # 2. Try GET with stream=True (actually hits the resource)
+                res = session.get(url, headers=headers, stream=True, allow_redirects=True, timeout=20)
+                
+                # Check Content-Disposition
                 cd = res.headers.get('Content-Disposition')
                 filename = self.get_filename_from_cd(cd)
                 if filename: return filename
                 
-                # 2. Final URL path basename
-                final_path = urlparse(res.url).path
+                # 3. Final URL path basename (if redirects changed the URL)
+                final_url = res.url
+                final_path = urlparse(final_url).path
                 filename = os.path.basename(final_path)
-                if filename and '.' in filename:
+                
+                if filename and '.' in filename and not any(x in filename.lower() for x in ["downlead", "zipper", "leech"]):
                     return unquote(filename)
+                    
         except Exception as e:
             logger.debug(f"[!] Filename resolution error: {e}")
         return None

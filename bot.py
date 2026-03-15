@@ -153,15 +153,16 @@ async def progress_for_pyrogram(current, total, ud_type, message, start):
     await safe_edit(message, f"{ud_type}\n{tmp}", force=is_done)
 
 def clean_unwanted_tags(text):
-    """Removes common distributor tags and unwanted strings."""
+    """Removes common distributor tags, qualities, and noise strings."""
     if not text: return ""
     # Remove things like @ChannelName, [Distributor], websites, etc.
     text = re.sub(r'@[\w_]+', '', text)
     text = re.sub(r'\[.*?\]', '', text)
     text = re.sub(r'\(.*?\)', '', text)
     text = re.sub(r'www\.\S+', '', text)
-    # Remove common quality/format tags that might be left over
-    text = re.sub(r'Dubbed|Hindi|Dual|Audio|Multi|UNCUT|Eng|Sub|Soft|Hard|ESub|HSub|SD|HD|FHD|4K|Ultra|Web-DL|BluRay|x264|x265|HEVC', '', text, flags=re.I)
+    # Remove common quality/format/noise tags
+    noise = r'Dubbed|Hindi|Dual|Audio|Multi|UNCUT|Eng|Sub|Soft|Hard|ESub|HSub|SD|HD|FHD|4K|Ultra|Web-DL|BluRay|x264|x265|HEVC|Episodes?|Downloads?|Full|Series|Zon-E'
+    text = re.sub(noise, '', text, flags=re.I)
     # Remove leftover separators
     text = re.sub(r'[\_\.\-]+', ' ', text)
     text = re.sub(r'\s+', ' ', text)
@@ -195,8 +196,8 @@ def parse_filename(basename):
     if ep_match:
         data["episode"] = ep_match.group(1).zfill(2)
     else:
-        # Standalone number check: "Solo Leveling 01" -> 01
-        nums = re.findall(r'(?:\s|^)(\d{1,4})(?:\b|(?=[^\dp]))', basename)
+        # Standalone number check: "Solo Leveling 01" or "SL_01" -> 01
+        nums = re.findall(r'(?:[\s\_\.\-]|^)(\d{1,4})(?:\b|(?=[^\dp]))', basename)
         for n in nums:
             if n != data["year"] and int(n) < 2000:
                 data["episode"] = n.zfill(2)
@@ -265,7 +266,6 @@ async def get_audio_language(filepath):
                 elif lang == "eng": langs.append("English")
                 elif lang == "jpn": langs.append("Japanese")
                 else: langs.append(lang.capitalize())
-        
         if langs:
             # Avoid duplicates and join
             return " / ".join(sorted(list(set(langs))))
@@ -281,25 +281,36 @@ def make_caption(filepath, size, duration, series_info=None):
     # 2. Extract series info from page title as a strong fallback for Name
     series_name = None
     if series_info:
-        series_name = parse_filename(series_info)['name']
-        series_name = clean_unwanted_tags(series_name)
+        # Avoid "Attack on Titan Episodes Download" -> "Attack on Titan"
+        series_name_dirty = series_info.split("|")[0].split("-")[0].strip()
+        series_info_parsed = parse_filename(series_name_dirty)
+        series_name = clean_unwanted_tags(series_info_parsed['name'])
     
     # 3. Final cleanup and merge
-    # Prefer series_name from page if filename name is messy or too short
     file_name_parsed = clean_unwanted_tags(info['name'])
     
-    if series_name and (len(series_name) > len(file_name_parsed) or file_name_parsed == "Unknown"):
+    # Logic: Prefer series_name from page for the "Title" if file name is generic or missing
+    # But always keep Season and Episode from filename if found.
+    if series_name and (len(series_name) > len(file_name_parsed) or file_name_parsed in ["Unknown", "Download"]):
         display_name = series_name
+    elif file_name_parsed and file_name_parsed != "Unknown":
+        display_name = file_name_parsed
     else:
-        display_name = file_name_parsed or series_name or "Unknown Anime"
+        display_name = series_name or "Unknown Anime"
     
-    # Ensure season/year fallbacks from page title
+    # Final check: if DISPLAY NAME is just a number or too short, fallback to series_info
+    if len(display_name) < 4 or display_name.isdigit():
+        display_name = series_name or display_name
+    
+    # Ensure season/year fallbacks from page title if filename missing them
     if series_info:
         info_alt = parse_filename(series_info)
         if not info['season']: info['season'] = info_alt['season']
         if not info['year']: info['year'] = info_alt['year']
         if not info['is_movie']: info['is_movie'] = info_alt['is_movie']
     
+    # Final check: if DISPLAY NAME still has "Episodes" or "Download", clean it again
+    display_name = clean_unwanted_tags(display_name)
     # Quality extraction from filename
     quality = get_real_quality(filepath)
     
@@ -397,6 +408,12 @@ async def download_file(url, file_name, status_msg, referer=None, cookies=None, 
             url
         ]
         if referer: cmd.extend(["--referer", referer])
+        
+        # Add common browser headers to aria2c
+        cmd.extend(["--header", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"])
+        cmd.extend(["--header", "Accept-Language: en-US,en;q=0.9"])
+        cmd.extend(["--header", "Connection: keep-alive"])
+        
         if cookies:
             cookie_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
             cmd.extend(["--header", f"Cookie: {cookie_str}"])
@@ -737,13 +754,6 @@ async def handle_rareanime(client, message, url, selection, status_msg):
         
         for idx, ep in enumerate(episodes, 1):
             await process_episode_batch(client, message, ep, status_msg, total, idx, series_info=series_info)
-            
-        await status_msg.delete()
-        logger.info("Process completed successfully for RareAnimes.")
-            
-    except Exception as e:
-        logger.error(f"RareAnimes Error: {e}", exc_info=True)
-        await status_msg.edit(f"❌ RareAnimes Error: {str(e)}")
             
         await status_msg.delete()
         logger.info("Process completed successfully for RareAnimes.")
