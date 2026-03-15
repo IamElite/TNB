@@ -169,8 +169,10 @@ def parse_filename(basename):
     if any(x in basename.lower() for x in ["movie", "film"]):
         data["is_movie"] = True
         
-    # Season patterns: S2, S02, Season 2
-    s_match = re.search(r'S(\d+)', basename, re.I) or re.search(r'Season\s*(\d+)', basename, re.I)
+    # Season patterns: S2, S02, Season 2, 2nd Season
+    s_match = re.search(r'Season\s*(\d+)', basename, re.I) or \
+              re.search(r'S(\d+)', basename, re.I) or \
+              re.search(r'(\d+)(?:st|nd|rd|th)\s*Season', basename, re.I)
     if s_match:
         data["season"] = s_match.group(1).zfill(2)
         
@@ -183,11 +185,9 @@ def parse_filename(basename):
         data["episode"] = ep_match.group(1).zfill(2)
     else:
         # Standalone number check: "Solo Leveling 01" -> 01
-        # Avoid years and resolutions (720p etc handled by quality regex later)
-        # We look for a number that isn't part of a year or resolution
         nums = re.findall(r'(?:\s|^)(\d{1,4})(?:\b|(?=[^\dp]))', basename)
         for n in nums:
-            if n != data["year"] and int(n) < 2000: # Simple heuristic: episodes are usually < 2000
+            if n != data["year"] and int(n) < 2000:
                 data["episode"] = n.zfill(2)
                 break
         
@@ -195,16 +195,23 @@ def parse_filename(basename):
     name_clean = basename
     # Remove extension
     name_clean = re.sub(r'\.(mp4|mkv|avi|webm)$', '', name_clean, flags=re.I)
-    # Remove episode/season info (S01, E01, Season 1, etc.)
-    name_clean = re.sub(r'(S\d+|E\d+|Season\s*\d+|Episode\s*\d+|Ep[\.\s]*\d+)', '', name_clean, flags=re.I)
     
-    # Also remove the specific episode number if found standalone
+    # Remove metadata components from name
+    patterns_to_remove = [
+        r'S\d+|Season\s*\d+|(\d+)(?:st|nd|rd|th)\s*Season',
+        r'E\d+|Episode\s*\d+|Ep[\.\s]*\d+',
+        r'\d{3,4}p',
+        r'\(?(19|20)\d{2}\)?'
+    ]
+    # Also if we found an episode number, specifically remove it if it's standalone
     if data["episode"]:
-        # Match the episode number if it's surrounded by spaces or at ends
-        name_clean = re.sub(rf'\b0*{int(data["episode"])}\b', '', name_clean)
-        
-    # Remove quality/year/tags
-    name_clean = re.sub(r'\d{3,4}p', '', name_clean, flags=re.I)
+        ep_no = data["episode"].lstrip('0') or "0"
+        patterns_to_remove.append(rf'(?:\s|^){ep_no}(?:\b|(?=[^\dp]))')
+        patterns_to_remove.append(rf'(?:\s|^){data["episode"]}(?:\b|(?=[^\dp]))')
+
+    for p in patterns_to_remove:
+        name_clean = re.sub(p, '', name_clean, flags=re.I)
+
     name_clean = clean_unwanted_tags(name_clean)
     
     if name_clean:
@@ -213,7 +220,7 @@ def parse_filename(basename):
         # Collapse multiple hyphens/dots/spaces
         name_clean = re.sub(r'[\.\-]{2,}', '-', name_clean)
         name_clean = re.sub(r'\s+', ' ', name_clean)
-        data["name"] = name_clean.strip() or "Unknown"
+        data["name"] = name_clean.strip()
         
     return data
 
@@ -255,11 +262,11 @@ async def get_audio_language(filepath):
     return "Hindi" # Fallback for your use case
 
 def make_caption(anime_name, filepath, size, duration, season_fallback=None, ep_fallback=None):
-    """Generate professional Telegram caption."""
-    # Use anime_name (the episode title from site) as primary info source
+    """Generate professional Telegram caption as per user's specific request."""
+    # Parse info from site title
     info = parse_filename(anime_name)
     
-    # If info name is unknown, use the raw anime_name
+    # Clean display name - Ensure it's the full name
     display_name = info['name'] if info['name'] not in ["Unknown", "Download"] else anime_name
     display_name = clean_unwanted_tags(display_name)
     
@@ -268,39 +275,36 @@ def make_caption(anime_name, filepath, size, duration, season_fallback=None, ep_
     if quality == "720p":
         quality = get_real_quality(filepath)
     
-    # Season and Episode
+    # Fallbacks / Formatting
     season = info.get('season') or (season_fallback.zfill(2) if season_fallback else None)
     episode = info.get('episode') or (ep_fallback.zfill(2) if ep_fallback else None)
     
     size_str = humanbytes(size)
     duration_str = time_formatter(duration * 1000)
     
-    # Consolidated Header: 🎬 Name | S01 | E06
-    header = f"🎬 **{display_name}**"
-    if season: header += f" | **S{season}**"
-    if episode: header += f" | **EP{episode}**"
-    
+    # Match user's requested format exactly
     if info['is_movie']:
-        cap = f"{header}"
+        cap = f"🎬 **{display_name}**"
         if info['year']: cap += f" ({info['year']})"
         cap += f"""
 ╭━━━━━━━━━━━━━━━━━━━╮
 │ 🍿 **Type:** Movie
 │ 🌐 **Language:** Hindi
-│ 📊 **Quality:** {quality}
+│ 📊 **Quality:** {quality.upper()}
 │ 📦 **Size:** {size_str}
 │ ⏱️ **Duration:** {duration_str}
 ╰━━━━━━━━━━━━━━━━━━━╯"""
     else:
-        cap = f"{header}\n╭━━━━━━━━━━━━━━━━━━━╮"
+        # User requested exact style:
+        # 🎬 Name \n ╭ \n │ season : \n 📺 Episode: 12 ...
+        cap = f"🎬 **{display_name}**"
+        cap += f"\n╭━━━━━━━━━━━━━━━━━━━╮"
         if season:
-            cap += f"\n│ 🏝️ **Season:** {season}"
-        if episode:
-            cap += f"\n│ 📺 **Episode:** {episode}"
-            
+            cap += f"\n│ **season :** {season}"
+        cap += f"\n📺 **Episode:** {episode if episode else 'N/A'}"
         cap += f"""
 │ 🌐 **Language:** Hindi
-│ 📊 **Quality:** {quality}
+│ 📊 **Quality:** {quality.upper()}
 │ 📦 **Size:** {size_str}
 │ ⏱️ **Duration:** {duration_str}
 ╰━━━━━━━━━━━━━━━━━━━╯"""
