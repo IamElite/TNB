@@ -1,64 +1,66 @@
-import requests
 import re
-import random
 import time
-from bs4 import BeautifulSoup
-from datetime import datetime, timedelta, timezone
 import logging
+import random
+from typing import List, Dict, Optional, Any, Set, Tuple
+from datetime import datetime, timedelta, timezone
+from bs4 import BeautifulSoup
+import requests
+from requests import Session
 
+# --- LOGGING ---
 logger = logging.getLogger("HindiAnimeZone")
 
 class HindiAnimeZone:
+    """
+    Professional Bypasser for HindiAnimeZone.com.
+    Handles multi-quality episodes and direct gate links.
+    """
+    
+    BASE_URL = "https://hindianimezone.com/"
+    USER_AGENTS = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    ]
+
     def __init__(self):
-        self.GATE_PATTERN = re.compile(r'download[a-z0-9]*\.(?:php|html|htm|py)?\?code=|(?:\?|&)code=[a-z0-9]+', re.IGNORECASE)
-        self.BASE_URL = "https://hindianimezone.com/"
-        self.USER_AGENTS = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_3_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Mobile/15E148 Safari/604.1"
-        ]
-        self.session = requests.Session()
+        self.session = Session()
         self.session.headers.update({
             'User-Agent': random.choice(self.USER_AGENTS),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
             'Referer': self.BASE_URL
         })
+        self.GATE_PATTERN = re.compile(r'code=[a-z0-9]{10,}', re.I)
 
-    def pro_main_bypass(self, url, selection=None):
-        """Main entry point to bypass anime pages or direct gate links.
-        Returns a list of episodes: [{'episode': 'name', 'downloads': [{'label': '480p', 'link': '...', 'server': '...'}]}]"""
-        logger.info(f"[*] ANALYZING: {url}")
+    def pro_main_bypass(self, url: str, selection: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+        """
+        Main entry point for bypassing HindiAnimeZone links.
+        """
+        logger.info(f"Analyzing HindiAnimeZone URL: {url}")
         
         if self.GATE_PATTERN.search(url):
             return self._handle_direct_gate(url)
 
-        results = []
         try:
             r = self.session.get(url, timeout=20)
             soup = BeautifulSoup(r.text, 'html.parser')
-            page_title = soup.find('h1').text.strip() if soup.find('h1') else "Anime Content"
+            page_title = soup.find('h1').get_text(strip=True) if soup.find('h1') else "Anime Content"
 
-            # Filter for leaf episode blocks
+            # Primary content detection
             all_ep = soup.select('div.episode')
             episodes = [ep for ep in all_ep if not ep.find('div', class_='episode')]
             
             if not episodes:
-                return self.process_legacy_page(soup)
+                return self._process_legacy_page(soup)
 
-            # Apply selection if provided
+            # Selection filtering
             if selection:
-                selected_episodes = []
-                for idx in selection:
-                    if 1 <= idx <= len(episodes):
-                        selected_episodes.append(episodes[idx-1])
-                episodes = selected_episodes
+                episodes = [episodes[i-1] for i in selection if 0 < i <= len(episodes)]
 
-            if not episodes:
-                logger.warning("[!] No episodes match selection.")
-                return []
-
-            logger.info(f"\n[+] PROCESSING {len(episodes)} CONTENT BLOCK(S)")
-            seen_hrefs = set()
+            results = []
+            seen_hrefs: Set[str] = set()
             
             for ep_div in episodes:
                 ep_name = self._extract_ep_name(ep_div, page_title)
@@ -67,44 +69,47 @@ class HindiAnimeZone:
                 quality_map = self._get_quality_links(ep_div, seen_hrefs)
                 if not quality_map: continue
                     
-                episode_entry = {"episode": ep_name.split('|')[0].strip(), "downloads": []}
+                episode_entry = {
+                    "episode": ep_name.split('|')[0].strip(),
+                    "downloads": [],
+                    "series_info": page_title
+                }
                 
-                logger.info(f"\n{'='*40}\n[*] PROCESSING: {episode_entry['episode']}")
+                logger.info(f"Processing Episode: {episode_entry['episode']}")
                 for q, data in quality_map.items():
-                    logger.info(f"    [*] QUALITY: {data['label']}")
                     server_links = self.bypass_gate(data['url'])
-                    if server_links:
-                        for s, l in server_links.items(): 
-                            final_link = self.get_final_link(s, l)
-                            if final_link:
-                                episode_entry["downloads"].append({
-                                    "label": data['label'],
-                                    "link": final_link,
-                                    "server": s
-                                })
-                    else:
-                        logger.warning(f"        [!] Failed to extract server links")
+                    if not server_links: continue
+                    
+                    for srv, srv_url in server_links.items(): 
+                        final_link = self.get_final_link(srv, srv_url)
+                        if final_link:
+                            episode_entry["downloads"].append({
+                                "label": data['label'],
+                                "link": final_link,
+                                "server": srv
+                            })
                 
                 if episode_entry["downloads"]:
                     results.append(episode_entry)
             
             return results
         except Exception as e:
-            logger.error(f"[!] Error: {e}", exc_info=True)
+            logger.error(f"HindiAnimeZone Error: {e}", exc_info=True)
             return []
 
-    def _extract_ep_name(self, ep_div, fallback):
+    def _extract_ep_name(self, ep_div: BeautifulSoup, fallback: str) -> str:
         tag = ep_div.select_one('.episode-title')
-        if tag: return tag.text.strip()
+        if tag: return tag.get_text(strip=True)
         prev = ep_div.find_previous(['h3', 'h2', 'h1'])
-        return prev.text.strip() if prev else fallback
+        return prev.get_text(strip=True) if prev else fallback
 
-    def _get_quality_links(self, ep_div, seen):
+    def _get_quality_links(self, container: BeautifulSoup, seen: Set[str]) -> Dict[str, Dict[str, str]]:
         q_map = {}
-        for a in ep_div.find_all('a', href=True):
-            href, text = a['href'], a.text.strip().lower()
-            # Bug Fix: Properly exclude telegram buttons and irrelevant links
-            if 't.me' in href or 'telegram' in text or 'watch' in text or not self.GATE_PATTERN.search(href) or href in seen:
+        for a in container.find_all('a', href=True):
+            href, text = a['href'], a.get_text(strip=True).lower()
+            if 't.me' in href or 'telegram' in text or 'watch' in text or href in seen:
+                continue
+            if not self.GATE_PATTERN.search(href):
                 continue
             
             seen.add(href)
@@ -123,177 +128,143 @@ class HindiAnimeZone:
                     q_map[q_key] = {'label': text.upper() or q_key.upper(), 'url': href}
         return q_map
 
-    def _handle_direct_gate(self, url):
+    def _handle_direct_gate(self, url: str) -> List[Dict[str, Any]]:
         links = self.bypass_gate(url)
         downloads = []
         if links:
-            logger.info(f"[+] SERVERS EXTRACTED:")
-            for n, l in links.items(): 
-                final_link = self.get_final_link(n, l)
-                if final_link:
-                    downloads.append({"label": "Direct Link", "link": final_link, "server": n})
+            for sname, surl in links.items(): 
+                final = self.get_final_link(sname, surl)
+                if final:
+                    downloads.append({"label": "Direct Link", "link": final, "server": sname})
         
         return [{"episode": "Direct Download", "downloads": downloads}] if downloads else []
 
-
-    def bypass_gate(self, gate_url):
-        """Bypasses download gates using verification simulation."""
+    def bypass_gate(self, gate_url: str) -> Optional[Dict[str, str]]:
+        """Simulates verification flow to reveal server links."""
         try:
             r = self.session.get(gate_url, timeout=15)
             final_url = r.url
             
-            def get_links(html):
+            def extract(html: str) -> Dict[str, str]:
                 s = BeautifulSoup(html, 'html.parser')
                 l = {a['data-label']: a['href'] for a in s.find_all('a', attrs={'data-label': True})}
                 if not l:
                     for a in s.find_all('a', href=True):
-                        t = a.text.strip().upper()
+                        t = a.get_text(strip=True).upper()
                         for srv in ['MEGA', 'GDSHARE', 'FILEPRESS', 'GDFLIX', 'DEADDRIVE']:
                             if srv in t: l[srv] = a['href']
                 return l
 
             for _ in range(3):
-                links = get_links(r.text)
+                links = extract(r.text)
                 if links: return links
                 time.sleep(1.5)
-                r = self.session.post(final_url, data={"verify": "1"}, headers={'Referer': final_url}, timeout=15)
+                # Attempt verification triggers
+                self.session.post(final_url, data={"verify": "1"}, headers={'Referer': final_url}, timeout=15)
                 r = self.session.get(final_url, headers={'Referer': final_url}, timeout=15)
-            return get_links(r.text) or None
+            return extract(r.text) or None
         except: return None
 
-    # V2 Bypass methods
-    def _get_gdshare_link(self, url):
+    def get_final_link(self, srv_name: str, url: str) -> Optional[str]:
+        """Routes to specific server bypassers."""
+        srv = srv_name.upper()
+        res = None
+        if 'GDSHARE' in srv: res = self._bypass_gdshare(url)
+        elif 'GDFLIX' in srv: res = self._bypass_gdflix(url)
+        elif 'FILEPRESS' in srv: res = self._bypass_filepress(url)
+        
+        if res: logger.info(f"Final DL ({srv_name}): {res}")
+        return res
+
+    def _bypass_gdshare(self, url: str) -> Optional[str]:
         try:
+            # Using fresh session for clean tokens if needed
             s = requests.Session()
-            h = {"User-Agent": "Mozilla/5.0"}
-            r = s.get(url, headers=h)
+            r = s.get(url, headers={"User-Agent": self.USER_AGENTS[0]})
             csrf = re.search(r"CSRF_TOKEN\s*=\s*['\"]([^'\"]+)", r.text).group(1)
-            h.update({"X-Requested-With": "XMLHttpRequest", "X-CSRF-Token": csrf, "Referer": r.url})
-
-            token = s.get(r.url, headers=h, timeout=15).json()["data"]["access_token"]
-            j = s.get(f"{r.url}&get_secure_links=1&access_token={token}", headers=h, timeout=15).json()
-
+            
+            h = {"X-Requested-With": "XMLHttpRequest", "X-CSRF-Token": csrf, "Referer": r.url}
+            data = s.get(r.url, headers=h, timeout=10).json()
+            token = data["data"]["access_token"]
+            
+            j = s.get(f"{r.url}&get_secure_links=1&access_token={token}", headers=h, timeout=10).json()
             inst = f"https://gcloud.sbs/instant/{j['gphotos_id']}/{j['gp_id']}"
-            csrf2 = re.search(r"CSRF_TOKEN\s*=\s*['\"]([^'\"]+)", s.get(inst, headers=h, timeout=15).text).group(1)
+            
+            r2 = s.get(inst, headers=h)
+            csrf2 = re.search(r"CSRF_TOKEN\s*=\s*['\"]([^'\"]+)", r2.text).group(1)
             h["X-CSRF-Token"] = csrf2
+            
+            return s.get(f"{inst}?ajax=1", headers=h).json().get("download_url")
+        except: return None
 
-            return s.get(f"{inst}?ajax=1", headers=h, timeout=15).json().get("download_url")
-        except Exception:
-            return None
-
-    def _get_filepress_link(self, url):
+    def _bypass_filepress(self, url: str) -> Optional[str]:
         try:
             fid = re.search(r'/file/([a-f0-9]+)', url).group(1)
             domain = re.search(r'(https?://[^/]+)', url).group(1)
             api = f"{domain}/api/file"
             h = {"User-Agent": "Mozilla/5.0", "Referer": f"{domain}/file/{fid}"}
 
-            name = requests.get(f"{api}/get/{fid}", headers=h, timeout=15).json()["data"]["name"]
-            token = requests.post(f"{api}/downlaod/", json={"id": fid, "method": "indexDownlaod", "captchaValue": ""}, headers=h, timeout=15).json()["data"]
+            info = requests.get(f"{api}/get/{fid}", headers=h).json()
+            name = info["data"]["name"]
+            
+            token_res = requests.post(f"{api}/downlaod/", 
+                json={"id": fid, "method": "indexDownlaod", "captchaValue": ""}, 
+                headers=h).json()
+            token = token_res["data"]
 
             h["Referer"] = f"{domain}/download/{name}"
-            r = requests.post(f"{api}/downlaod2/", json={"id": token, "method": "indexDownlaod", "captchaValue": None}, headers=h, timeout=15).json()
+            final = requests.post(f"{api}/downlaod2/", 
+                json={"id": token, "method": "indexDownlaod", "captchaValue": None}, 
+                headers=h).json()
+            return final["data"][0] if final.get("status") else None
+        except: return None
 
-            return r["data"][0] if r.get("status") else None
-        except Exception:
-            return None
-
-    def _get_gdflix_link(self, url):
+    def _bypass_gdflix(self, url: str) -> Optional[str]:
         try:
-            h = {"User-Agent": "Mozilla/5.0"}
-            soup = BeautifulSoup(requests.get(url, headers=h, timeout=20).text, 'html.parser')
+            h = {"User-Agent": self.USER_AGENTS[0]}
+            r = requests.get(url, headers=h, timeout=15)
+            soup = BeautifulSoup(r.text, 'html.parser')
             domain = re.search(r'https?://([^/]+)', url).group(1)
 
             for target in ["INSTANT DL", "DIRECT SERVER"]:
                 for a in soup.find_all("a", href=True):
-                    if target in a.text.upper() and "login" not in a["href"].lower():
+                    if target in a.get_text(strip=True).upper() and "login" not in a["href"].lower():
                         link = a["href"] if a["href"].startswith("http") else f"https://{domain}{a['href']}"
                         try:
-                            final = requests.head(link, headers=h, allow_redirects=True, timeout=10).url
-                            if "url=" in final:
-                                final = re.search(r'url=(https?://[^\s&]+)', final).group(1)
-                            return final
-                        except:
-                            return link
-        except Exception:
-            pass
-        return None
+                            final_head = requests.head(link, headers=h, allow_redirects=True, timeout=10).url
+                            if "url=" in final_head:
+                                return re.search(r'url=(https?://[^\s&]+)', final_head).group(1)
+                            return final_head
+                        except: return link
+        except: return None
 
-    def get_final_link(self, srv_name, url):
-        """Routes url to the appropriate bypasser and returns the final link."""
-        srv = srv_name.upper()
-        dl = None
-        if 'GDSHARE' in srv:
-            dl = self._get_gdshare_link(url)
-        elif 'GDFLIX' in srv:
-            dl = self._get_gdflix_link(url)
-        elif 'FILEPRESS' in srv:
-            dl = self._get_filepress_link(url)
-        
-        if dl:
-            logger.info(f"        [PRO] FINAL DL ({srv_name}): {dl}")
-        return dl
-
-    def get_episode_info(self, url):
-        """Deep scans post page for the latest Hindi/Multi episode."""
+    def get_episode_info(self, url: str) -> Dict[str, Any]:
+        """Scans page for Hindi/Multi count."""
         try:
             r = self.session.get(url, timeout=15)
             soup = BeautifulSoup(r.text, 'html.parser')
             max_ep, has_h = 0, False
             for ep in soup.select('div.episode'):
-                lang = ep.select_one('.language').text.lower() if ep.select_one('.language') else ""
-                title = ep.select_one('.episode-title').text if ep.select_one('.episode-title') else ""
-                # Preserving user's expanded logic
-                is_multi = any(x in lang for x in ['multi', 'hindi', 'hin-', 'hin', 'hi']) or lang == 'hin'
-                num = re.search(r'Episode\s*(\d+)', title, re.IGNORECASE)
-                if num and is_multi:
+                lang = ep.select_one('.language').get_text(strip=True).lower() if ep.select_one('.language') else ""
+                title = ep.select_one('.episode-title').get_text(strip=True) if ep.select_one('.episode-title') else ""
+                is_hin = any(x in lang for x in ['multi', 'hindi', 'hin'])
+                num = re.search(r'Episode\s*(\d+)', title, re.I)
+                if num and is_hin:
                     max_ep = max(max_ep, int(num.group(1)))
                     has_h = True
             return {'count': max_ep if has_h else "N/A", 'status': "HINDI/MULTI" if has_h else "ENG/JAP"}
         except: return {'count': "N/A", 'status': "UNKNOWN"}
 
-    def get_latest_updates(self):
-        """Fetches updates from the last 12 hours with deep scanning."""
-        logger.info("[*] FETCHING LATEST UPDATES (LAST 12 HOURS)...")
-        try:
-            r = self.session.get(self.BASE_URL, timeout=15)
-            soup = BeautifulSoup(r.text, 'html.parser')
-            updates, now = [], datetime.now(timezone.utc)
-            threshold = now - timedelta(hours=12)
-
-            for tag in soup.find_all('time', datetime=True):
-                try:
-                    dt = datetime.fromisoformat(tag['datetime']).replace(tzinfo=timezone.utc)
-                    if dt < threshold: continue
-                    parent = tag.find_parent(['div', 'article', 'li'])
-                    while parent and not parent.find('a', href=True): parent = parent.parent
-                    if not parent: continue
-                    
-                    for link_tag in parent.find_all('a', href=True):
-                        url, title = link_tag['href'], link_tag.text.strip()
-                        if any(x in url for x in ['/category/', '/tag/', '/author/']) or len(title) < 5: continue
-                        if self.BASE_URL in url and not any(u['url'] == url for u in updates):
-                            logger.info(f"    [>] Scanning: {title[:40]}...")
-                            info = self.get_episode_info(url)
-                            updates.append({'title': title, 'url': url, 'time': dt.strftime('%H:%M'), 'episode': info['count'], 'language': info['status']})
-                            break
-                except: continue
-                if len(updates) >= 20: break
-            return updates
-        except Exception as e:
-            logger.error(f"[!] Error: {e}"); return []
-
-    def process_legacy_page(self, soup):
-        seen = set()
+    def _process_legacy_page(self, soup: BeautifulSoup) -> List[Dict[str, Any]]:
+        seen: Set[str] = set()
         q_map = self._get_quality_links(soup, seen)
         downloads = []
         for q, data in q_map.items():
-            logger.info(f"\n[*] QUALITY: {data['label']}")
             links = self.bypass_gate(data['url'])
-            if links:
-                for s, l in links.items(): 
-                    final_link = self.get_final_link(s, l)
-                    if final_link:
-                        downloads.append({"label": data['label'], "link": final_link, "server": s})
+            if not links: continue
+            for sname, surl in links.items(): 
+                final = self.get_final_link(sname, surl)
+                if final:
+                    downloads.append({"label": data['label'], "link": final, "server": sname})
         
         return [{"episode": "Content", "downloads": downloads}] if downloads else []
