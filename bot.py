@@ -157,7 +157,12 @@ class RareAnimes:
         for element in soup.find_all(["p", "div", "h1", "h2", "h3", "h4", "span", "a"]):
             if element.name == "a" and element.get("href"):
                 href = element["href"]
-                if "codedew.com" in href or "multiquality" in href:
+                # Detect hub or download link
+                is_valid = any(x in href for x in ["codedew.com", "multiquality", "store.animetoonhindi.com", "mega.nz", "drive.google.com"])
+                # Also treat as hub if text suggests it
+                is_hub_text = any(x in tag_text.lower() for x in ["multi", "watch", "mega", "g-drive", "batch"])
+                
+                if is_valid or is_hub_text:
                     if href in seen_urls: continue
                     seen_urls.add(href)
                     
@@ -170,7 +175,7 @@ class RareAnimes:
                         current_label = f"Episode {fallback_counter}"
                         fallback_counter += 1
                         
-                    is_hub = any(x in href for x in ["store.animetoonhindi.com", "/multiquality/", "multiquality.click"])
+                    is_hub = any(x in href for x in ["store.animetoonhindi.com", "/multiquality/", "multiquality.click"]) or is_hub_text
                     potential_links.append({"url": href, "label": current_label, "is_hub": is_hub})
             else:
                 # Update last seen label from text nodes
@@ -213,14 +218,18 @@ class RareAnimes:
             if r.status_code != 200: return []
             soup = BeautifulSoup(r.text, "html.parser")
             eps = []
+            seen = set()
             f_count = 1
             for a in soup.find_all("a", href=True):
-                if "codedew.com/zipper/" in a["href"]:
-                    text = a.get_text(strip=True)
+                href = a["href"]
+                if any(x in href for x in ["codedew.com/zipper/", "multiquality.click/downlead/"]):
+                    if href in seen: continue
+                    seen.add(href)
+                    text = a.get_text(" ", strip=True)
                     m = self.EP_REGEX.search(text)
                     label = m.group(1).title() if m else f"Episode {f_count}"
                     if not m: f_count += 1
-                    eps.append({"url": a["href"], "label": label, "is_hub": False})
+                    eps.append({"url": href, "label": label, "is_hub": False})
             return eps
         except: return []
 
