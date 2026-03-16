@@ -781,6 +781,7 @@ class AnimeBot:
         try:
             fname = os.path.basename(fpath)
             await self.app.send_video(m.chat.id, fpath, caption=cap, duration=dur, width=w, height=h, thumb=thumb,
+                                    supports_streaming=True,
                                     progress=self._upload_progress, progress_args=(f"📤 **Uploading {current}/{total}**", status, start, fname))
         except Exception as e: logger.error(f"Upload fail: {e}")
         if thumb and os.path.exists(thumb): os.remove(thumb)
@@ -842,10 +843,24 @@ class AnimeBot:
     async def _get_video_meta(self, path):
         try:
             cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,duration", "-of", "json", path]
-            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE)
-            d = json.loads((await proc.communicate())[0])["streams"][0]
-            return int(d.get("width", 0)), int(d.get("height", 0)), int(float(d.get("duration", 0)))
-        except: return 0, 0, 0
+            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.warning(f"[!] ffprobe failed for {path}: {stderr.decode()}")
+                return 0, 0, 0
+            
+            data = json.loads(stdout)
+            if "streams" not in data or not data["streams"]:
+                return 0, 0, 0
+                
+            d = data["streams"][0]
+            width = int(d.get("width", 0))
+            height = int(d.get("height", 0))
+            duration = int(float(d.get("duration", 0)))
+            return width, height, duration
+        except Exception as e:
+            logger.error(f"[!] Error extracting video meta: {e}")
+            return 0, 0, 0
 
     async def _make_thumb(self, path, dur):
         t = f"{path}.jpg"
