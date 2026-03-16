@@ -292,8 +292,12 @@ class RareAnimes:
             time.sleep(4.0)
             
             api_url = urljoin(self.MQ_BASE_URL, jd["routes"]["links"])
+            
+            # Log session cookies for debugging
+            cookie_names = list(self.session.cookies.keys())
+            logger.info(f"[*] MQ Session Cookies: {', '.join(cookie_names)}")
+            
             headers = {
-                "Host": urlparse(self.MQ_BASE_URL).netloc,
                 "Origin": self.MQ_BASE_URL.rstrip("/"),
                 "Referer": url,
                 "User-Agent": self.UA,
@@ -307,27 +311,38 @@ class RareAnimes:
                 "Sec-CH-UA-Platform": '"Linux"',
                 "Sec-Fetch-Dest": "empty",
                 "Sec-Fetch-Mode": "cors",
-                "Sec-Fetch-Site": "same-origin",
-                "DNT": "1"
+                "Sec-Fetch-Site": "same-origin"
             }
             payload = {"captcha": None, "_token": jd["token"]}
             
             for attempt in range(1, 4):
                 try:
-                    logger.info(f"[*] Fetching links (Attempt {attempt}/3)...")
-                    api_resp = self.session.post(api_url, headers=headers, json=payload, timeout=20)
-                    
-                    if not api_resp.text:
+                    logger.info(f"[*] Fetching links (Attempt {attempt}/3) to: {api_url[:60]}...")
+                    # Primary try using curl_cffi session
+                    try:
+                        api_resp = self.session.post(api_url, headers=headers, json=payload, timeout=12)
+                        st_code = api_resp.status_code
+                        resp_text = api_resp.text
+                    except Exception as ce:
+                        logger.warning(f"[!] curl_cffi failed on MQ API: {ce}. Falling back to standard requests...")
+                        # Fallback to standard requests (stable on Linux)
+                        import requests as py_requests
+                        fall_resp = py_requests.post(api_url, headers=headers, json=payload, timeout=15, verify=False)
+                        st_code = fall_resp.status_code
+                        resp_text = fall_resp.text
+
+                    logger.info(f"[*] MQ API Response (Attempt {attempt}): Status {st_code}")
+                    if not resp_text:
                         logger.warning(f"[!] Empty response from MQ API (Attempt {attempt})")
                         time.sleep(2 * attempt)
                         continue
                     
-                    if api_resp.status_code != 200:
-                        logger.warning(f"[!] MQ API Status {api_resp.status_code} (Attempt {attempt})")
+                    if st_code != 200:
+                        logger.warning(f"[!] MQ API Status {st_code} (Attempt {attempt})")
                         time.sleep(2 * attempt)
                         continue
                         
-                    data = api_resp.json()
+                    data = json.loads(resp_text)
                     if data.get("success"):
                         qualities = data.get("qualities", [])
                         if not qualities:
