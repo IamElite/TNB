@@ -660,9 +660,20 @@ class AnimeBot:
                 fname = await asyncio.to_thread(bypasser.resolve_filename, url, meta.get('referer'), meta.get('cookies'))
                 
                 if not fname or len(fname) < 5:
+                    # Detect season for filename
+                    s = re.search(r'S(\d+)|Season\s*(\d+)', series_info or "", re.I)
+                    se_str = f"S{(s.group(1) or s.group(2)).zfill(2)}" if s else ""
+                    
                     ep_num = re.search(r'(\d+)', ep.get('episode', ''))
                     ep_str = f"E{ep_num.group(1).zfill(2)}" if ep_num else f"E{str(current).zfill(2)}"
-                    fname = f"{self._clean_noise(series_info or 'Anime')} - {ep_str} [{label.upper()}].mp4"
+                    
+                    cleaned_name = self._clean_noise(series_info or 'Anime')
+                    # If se_str is already in cleaned_name, don't repeat
+                    if se_str and (se_str in cleaned_name.upper() or f"SEASON {int(se_str[1:])}" in cleaned_name.upper()):
+                        se_str = ""
+                        
+                    fname = f"{cleaned_name} {se_str} {ep_str} [{label.upper()}].mp4"
+                    fname = re.sub(r'\s+', ' ', fname).strip()
                 
                 fpath = os.path.join(req_dir, re.sub(r'[\\/*?:"<>|]', "", fname).strip())
                 logger.info(f"[*] Target File: {fpath}")
@@ -796,7 +807,7 @@ class AnimeBot:
             fname = os.path.basename(fpath)
             await self.app.send_video(m.chat.id, fpath, caption=cap, duration=dur, width=w, height=h, thumb=thumb,
                                     supports_streaming=True,
-                                    progress=self._upload_progress, progress_args=(f"📤 **Uploading {current}/{total}**", status, start, fname))
+                                    progress=self._upload_progress, progress_args=(f"**Uploading {current}/{total}**", status, start, fname))
         except Exception as e: logger.error(f"Upload fail: {e}")
         if thumb and os.path.exists(thumb): os.remove(thumb)
 
@@ -819,15 +830,28 @@ class AnimeBot:
 
     def _make_caption(self, path, size, dur, series_info):
         info = self._parse_filename(os.path.basename(path))
-        name = self._clean_noise(series_info or info['name'])
+        
+        # Priority: parse from path, then series_info
+        season = info.get('season')
+        if not season and series_info:
+            s_match = re.search(r'S(\d+)|Season\s*(\d+)', series_info, re.I)
+            if s_match: season = (s_match.group(1) or s_match.group(2)).zfill(2)
+            
+        # Clean title for caption (Remove Season info)
+        name = self._clean_title(series_info or info['name'])
+        
         q = re.search(r'(\d{3,4}p)', path, re.I)
         q_str = q.group(1).upper() if q else "720P"
         
         cap = f"🎬 **{name}**\n╭━━━━━━━━━━━━━━━━━━━╮\n"
-        if info.get('season'):
-            cap += f"│ 🏝️ **Season:** {info['season']}\n"
-        cap += f"│ 📺 **Episode:** {info['episode'] or 'N/A'}\n"
-        cap += f"│ 🌐 **Language:** Hindi\n│ 📊 **Quality:** {q_str}\n│ 📦 **Size:** {Utils.human_bytes(size)}\n│ ⏱️ **Duration:** {Utils.time_formatter(dur*1000)}\n╰━━━━━━━━━━━━━━━━━━━╯"
+        if season:
+            cap += f"│ 🏝️ **Season**    : {season}\n"
+        cap += f"│ 📺 **Episode**   : {info['episode'] or 'N/A'}\n"
+        cap += f"│ 🌐 **Language**  : Hindi\n"
+        cap += f"│ 📊 **Quality**   : {q_str}\n"
+        cap += f"│ 📦 **Size**      : {Utils.human_bytes(size)}\n"
+        cap += f"│ ⏱️ **Duration**  : {Utils.time_formatter(dur*1000)}\n"
+        cap += f"╰━━━━━━━━━━━━━━━━━━━╯"
         return cap
 
     def _parse_filename(self, text):
@@ -844,9 +868,15 @@ class AnimeBot:
         data["name"] = self._clean_noise(re.sub(r'\(.*?\)|\[.*?\]', '', text.split('.')[0]))
         return data
 
-    def _clean_noise(self, text):
-        # Aggressive removal of Season, HD, and other tags
+    def _clean_title(self, text):
+        # Strips EVERYTHING including Seasons for the 🎬 Title line
         noise = r'Dubbed|Hindi|Dual|Audio|Multi|Episodes?|Downloads?|Full|Series|Zon-E|HD|BluRay|FHD|SD|Season\s*\d+|S\d+'
+        cleaned = re.sub(noise, '', text, flags=re.I).replace('.', ' ').replace('_', ' ')
+        return re.sub(r'\s+', ' ', cleaned).strip()
+
+    def _clean_noise(self, text):
+        # Preserves Season so it stays in Filenames
+        noise = r'Dubbed|Hindi|Dual|Audio|Multi|Episodes?|Downloads?|Full|Series|Zon-E|HD|BluRay|FHD|SD'
         cleaned = re.sub(noise, '', text, flags=re.I).replace('.', ' ').replace('_', ' ')
         return re.sub(r'\s+', ' ', cleaned).strip()
 
