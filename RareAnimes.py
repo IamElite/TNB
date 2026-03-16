@@ -369,36 +369,56 @@ class RareAnimes:
             token = jd["token"]
             links_api = urljoin(self.MQ_BASE_URL, jd["routes"]["links"])
             
-            # Step 4a: Optional ping/Establishment
+            # Step 4a: Extract XSRF-TOKEN for Laravel CSRF protection
+            xsrf_token = self.session.cookies.get("XSRF-TOKEN")
+            if xsrf_token:
+                xsrf_token = unquote(xsrf_token)
+            
+            # Step 4b: Optional ping/Establishment
             if jd.get("routes", {}).get("ping"):
                 ping_url = urljoin(self.MQ_BASE_URL, jd["routes"]["ping"])
                 try:
-                    self.session.post(ping_url, headers={"Referer": url}, timeout=5)
+                    self.session.post(ping_url, headers={
+                        "Referer": url,
+                        "X-XSRF-TOKEN": xsrf_token if xsrf_token else ""
+                    }, timeout=5)
                 except: pass
             
-            # Step 4b: Mandatory wait for backend to prepare links (important for MQ sites)
-            logger.info("[*] Waiting for links to generate (3s)...")
-            time.sleep(3.0)
+            # Step 4c: Mandatory wait for backend to prepare links (important for MQ sites)
+            # Use fixed wait time to avoid NameError (step was not defined here)
+            wait_time = 3.5
+            logger.info(f"[*] Waiting for links to generate ({wait_time:.1f}s)...")
+            time.sleep(wait_time)
             
-            # Step 4c: API Call with retries
+            # Step 4d: API Call with retries
             for attempt in range(1, 3):
                 logger.info(f"[*] Posting to Links API (Attempt {attempt})...")
+                api_headers = {
+                    "Referer": url,
+                    "Origin": self.MQ_BASE_URL.rstrip("/"),
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/javascript, */*; q=0.01",
+                    "Sec-Fetch-Site": "same-origin",
+                    "Sec-Fetch-Mode": "cors",
+                    "Sec-Fetch-Dest": "empty"
+                }
+                if xsrf_token:
+                    api_headers["X-XSRF-TOKEN"] = xsrf_token
+                
                 api_resp = self.session.post(
                     links_api,
-                    headers={
-                        "Referer": url,
-                        "Origin": self.MQ_BASE_URL.rstrip("/"),
-                        "X-Requested-With": "XMLHttpRequest",
-                        "Content-Type": "application/json",
-                        "Accept": "application/json, text/javascript, */*; q=0.01"
-                    },
+                    headers=api_headers,
                     json={"captcha": None, "_token": token},
-                    timeout=15
+                    timeout=15,
+                    allow_redirects=True
                 )
                 
                 if api_resp.status_code != 200:
                     logger.warning(f"Step 4 Warning: API returned status {api_resp.status_code}")
-                    time.sleep(2.0)
+                    if api_resp.status_code == 403:
+                        logger.error(f"  [!] 403 Forbidden. Body: {api_resp.text[:200]}...")
+                    time.sleep(2.5)
                     continue
 
                 try:
@@ -428,7 +448,7 @@ class RareAnimes:
                     logger.warning(f"Step 4 Warning: API Success False. Message: {msg}")
                     if attempt == 1:
                         logger.info("[*] Retrying after extra delay...")
-                        time.sleep(3.0)
+                        time.sleep(4.0)
             
             logger.error("Step 4 Error: Failed to fetch qualities after retries.")
         except Exception as e:
