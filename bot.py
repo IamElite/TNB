@@ -460,6 +460,10 @@ class RareAnimes:
             if m: return unquote(m.group(1) or m.group(2) or m.group(3))
             return os.path.basename(urlparse(res.url).path)
         except: return None
+    @staticmethod
+    def progress_bar(p, l=15):
+        f = int(l * p / 100)
+        return f"[{'█'*f}{'░'*(l-f)}]"
 
 # --- UTILITIES ---
 class Utils:
@@ -643,7 +647,10 @@ class AnimeBot:
                 line_str = line.decode('utf-8', 'ignore')
                 m = re.search(r'\((\d+)%\).*?SPD:([\d\.]+[KMG]i?B)', line_str)
                 if m: 
-                    await Utils.safe_edit(status, f"🚀 **Downloading** [{m.group(1)}%]\n**Speed**: {m.group(2)}/s")
+                    p = int(m.group(1))
+                    bar = Utils.progress_bar(p)
+                    fname = os.path.basename(path)
+                    await Utils.safe_edit(status, f"🚀 **Downloading**: `{fname}`\n{bar} **{p}%**\n**Speed**: {m.group(2)}/s")
                 elif "ERROR" in line_str.upper():
                     logger.error(f"[!] aria2c error: {line_str.strip()}")
             await proc.wait()
@@ -678,8 +685,10 @@ class AnimeBot:
                             curr += len(chunk)
                             if time.time() - last_up > 4:
                                 p = curr * 100 / total if total else 0
+                                bar = Utils.progress_bar(p)
+                                fname = os.path.basename(path)
                                 speed = curr / (time.time() - start_t)
-                                await Utils.safe_edit(status, f"🚀 **Downloading (Fallback)** [{p:.1f}%]\n**Speed**: {Utils.human_bytes(speed)}/s")
+                                await Utils.safe_edit(status, f"🚀 **Downloading (Fallback)**: `{fname}`\n{bar} **{p:.1f}%**\n**Speed**: {Utils.human_bytes(speed)}/s")
                                 last_up = time.time()
             return os.path.exists(path) and os.path.getsize(path) > 1000
         except Exception as e:
@@ -692,8 +701,9 @@ class AnimeBot:
         cap = self._make_caption(fpath, os.path.getsize(fpath), dur, series_info)
         start = time.time()
         try:
+            fname = os.path.basename(fpath)
             await self.app.send_video(m.chat.id, fpath, caption=cap, duration=dur, width=w, height=h, thumb=thumb,
-                                    progress=self._upload_progress, progress_args=(f"📤 **Uploading {current}/{total}**", status, start))
+                                    progress=self._upload_progress, progress_args=(f"📤 **Uploading {current}/{total}**", status, start, fname))
         except Exception as e: logger.error(f"Upload fail: {e}")
         if thumb and os.path.exists(thumb): os.remove(thumb)
 
@@ -752,10 +762,11 @@ class AnimeBot:
         await (await asyncio.create_subprocess_exec(*cmd, stderr=asyncio.subprocess.DEVNULL)).wait()
         return t if os.path.exists(t) else None
 
-    async def _upload_progress(self, cur, tot, ud, msg, start):
+    async def _upload_progress(self, cur, tot, ud, msg, start, fname):
         p = cur*100/tot if tot else 0
         if time.time() - getattr(self, '_last_up', 0) > 4:
-            await Utils.safe_edit(msg, f"{ud}\n[{p:.1f}%] `{'█'*(int(p)//10)}`")
+            bar = Utils.progress_bar(p)
+            await Utils.safe_edit(msg, f"{ud}: `{fname}`\n{bar} **{p:.1f}%**")
             self._last_up = time.time()
 
     async def _warmup_mirror(self, url, ua, cookies):
