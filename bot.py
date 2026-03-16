@@ -528,18 +528,32 @@ class AnimeBot:
 
     async def _download_manager(self, url, path, status, meta):
         ua, cookies = meta.get('user_agent', Config.DEFAULT_UA), meta.get('cookies', {})
+        referer = meta.get('referer', "https://swift.multiquality.click/")
         is_sensitive = any(x in url.lower() for x in ["monster", "swift", "multiquality", "downlead"])
+        
+        headers = {
+            "User-Agent": ua,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "cross-site",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1"
+        }
+        if referer: headers["Referer"] = referer
+
         if is_sensitive:
             logger.info(f"[*] Warming up mirror for sensitive link: {urlparse(url).netloc}")
             await self._warmup_mirror(f"https://{urlparse(url).netloc}/", ua, cookies)
         
         conn = "1" if is_sensitive else "12"
-        # Split path into dir and file for aria2c
         directory, filename = os.path.split(path)
         
-        cmd = ["aria2c", "-x", conn, "-s", conn, "-d", directory, "-o", filename, "--user-agent", ua, "--check-certificate=false",
-               "--header", "Sec-CH-UA-Platform: \"Linux\"", "--header", "Sec-CH-UA: \"Chromium\";v=\"124\"", url]
-        if meta.get('referer'): cmd.extend(["--referer", meta['referer']])
+        cmd = ["aria2c", "-x", conn, "-s", conn, "-d", directory, "-o", filename, "--user-agent", ua, "--check-certificate=false"]
+        for k, v in headers.items():
+            if k.lower() not in ["user-agent", "cookie"]:
+                cmd.extend(["--header", f"{k}: {v}"])
         if cookies: cmd.extend(["--header", f"Cookie: {'; '.join([f'{k}={v}' for k, v in cookies.items()])}"])
         
         logger.info(f"[*] Starting aria2c: {' '.join(cmd[:10])}...")
@@ -555,10 +569,43 @@ class AnimeBot:
                 elif "ERROR" in line_str.upper():
                     logger.error(f"[!] aria2c error: {line_str.strip()}")
             await proc.wait()
-            logger.info(f"[*] aria2c finished with code: {proc.returncode}")
-            return proc.returncode == 0 and os.path.exists(path)
+            
+            if proc.returncode == 0 and os.path.exists(path):
+                logger.info(f"[*] aria2c success: {path}")
+                return True
+            
+            if proc.returncode == 22 or any(x in url.lower() for x in ["monster", "swift"]):
+                logger.warning(f"[!] aria2c failed (Code {proc.returncode}). Trying stable requests fallback...")
+                return await self._download_requests(url, path, status, headers, cookies)
+                
+            return False
         except Exception as e:
-            logger.error(f"[!] Failed to start aria2c: {e}")
+            logger.error(f"[!] aria2c start failed: {e}. Trying fallback...")
+            return await self._download_requests(url, path, status, headers, cookies)
+
+    async def _download_requests(self, url, path, status, headers, cookies):
+        try:
+            import requests as py_requests
+            logger.info(f"[*] Starting chunked requests download: {url[:60]}...")
+            with py_requests.get(url, headers=headers, cookies=cookies, stream=True, timeout=30, verify=False) as r:
+                r.raise_for_status()
+                total = int(r.headers.get('content-length', 0))
+                curr = 0
+                last_up = 0
+                start_t = time.time()
+                with open(path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=1 * 1024 * 1024):
+                        if chunk:
+                            f.write(chunk)
+                            curr += len(chunk)
+                            if time.time() - last_up > 4:
+                                p = curr * 100 / total if total else 0
+                                speed = curr / (time.time() - start_t)
+                                await Utils.safe_edit(status, f"🚀 **Downloading (Fallback)** [{p:.1f}%]\n**Speed**: {Utils.human_bytes(speed)}/s")
+                                last_up = time.time()
+            return os.path.exists(path) and os.path.getsize(path) > 1000
+        except Exception as e:
+            logger.error(f"[!] Requests fallback failed: {e}")
             return False
 
     async def _upload_file(self, m, fpath, status, current, total, label, series_info):
