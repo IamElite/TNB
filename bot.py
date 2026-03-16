@@ -48,116 +48,280 @@ logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 # --- PRO BYPASSER ENGINE ---
 class RareAnimes:
+    """
+    Professional Bypasser for RareAnimes and associated multi-quality links.
+    Features browser-grade impersonation and robust metadata extraction.
+    """
+    
     ROOT_URL = "https://codedew.com/"
     MQ_BASE_URL = "https://swift.multiquality.click/"
     UA = Config.DEFAULT_UA
     
+    # Regex patterns for metadata extraction
     EP_REGEX = re.compile(r"(Episode\s*\d+|Ep\s*\d+|S\d+\s*E\d+|Movie|Special|OVA)", re.I)
+    QUALITY_REGEX = re.compile(r'(\d{3,4}p|SD|HD|FHD|4K|Ultra\s*HD)', re.I)
 
     def __init__(self):
-        self.session = currequests.Session(impersonate="chrome124")
-        self.session.headers.update({
+        self.session: currequests.Session = self._init_session()
+        self.initialized: bool = False
+        self.last_mq_referer: Optional[str] = None
+
+    def _init_session(self) -> currequests.Session:
+        """Initialize a high-fidelity browser session with professional headers."""
+        session = currequests.Session(impersonate="chrome124")
+        session.headers.update({
             "User-Agent": self.UA,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
             "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br, zstd",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "DNT": "1",
             "Sec-CH-UA": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
             "Sec-CH-UA-Mobile": "?0",
             "Sec-CH-UA-Platform": '"Linux"'
         })
-        self.last_mq_referer = None
+        return session
+
+    def init_session(self) -> None:
+        """Warms up the session by visiting entry points to establish cookies."""
+        if self.initialized: return
+        try:
+            logger.info("[*] Warming up session...")
+            self.session.get("https://rareanimes.app/", timeout=15)
+            time.sleep(1.0)
+            self.session.get(self.ROOT_URL, timeout=15, headers={"Referer": "https://rareanimes.app/"})
+            self.session.get(self.MQ_BASE_URL, timeout=15, headers={"Referer": self.ROOT_URL})
+            self.initialized = True
+        except Exception as e:
+            logger.warning(f"[!] Session warmup failed: {e}")
+            self.initialized = True
 
     def get_links(self, url: str, ep_start: Optional[int] = None, ep_end: Optional[int] = None) -> Dict[str, Any]:
+        """Main entry point to extract direct links from a series page."""
         try:
-            # Warmup
-            self.session.get("https://rareanimes.app/", timeout=15)
+            self.init_session()
             resp = self.session.get(url, timeout=20)
-            if resp.status_code != 200: return {"error": f"Page Status {resp.status_code}", "episodes": []}
+            if resp.status_code != 200:
+                return {"error": f"Failed to load page (Status {resp.status_code})", "episodes": []}
                 
             soup = BeautifulSoup(resp.text, "html.parser")
             series_info = self._scrape_series_metadata(soup, url)
             raw_eps = self._extract_episodes(resp.text, url)
             
+            if not raw_eps: return {"error": "No episodes found on page", "episodes": []}
+
+            # Range-based episode selection
             selected_eps = self._filter_episodes(raw_eps, ep_start, ep_end)
+            
             results = []
             for ep in selected_eps:
                 links = self._try_mirrors(ep["mirrors"])
-                results.append({
+                entry = {
                     "episode": ep["label"],
                     "downloads": links if links else [],
                     "metadata": {"cookies": self.session.cookies.get_dict(), "user_agent": self.UA}
-                })
+                }
+                results.append(entry)
+
             return {"episodes": results, "series_info": series_info}
         except Exception as e:
+            logger.error(f"Error in get_links: {e}", exc_info=True)
             return {"error": str(e), "episodes": []}
 
-    def _scrape_series_metadata(self, soup, url):
+    def _scrape_series_metadata(self, soup: BeautifulSoup, url: str) -> str:
         h1 = soup.find("h1")
-        return h1.text.strip() if h1 else url.split("/")[-1].replace("-", " ").title()
+        if h1: return h1.get_text(strip=True)
+        return url.rstrip("/").split("/")[-1].replace("-", " ").title()
 
-    def _extract_episodes(self, html, referer):
+    def _extract_episodes(self, html: str, referer: str) -> List[Dict[str, Any]]:
+        """Parses HTML to find and group episode links."""
         soup = BeautifulSoup(html, "html.parser")
-        found = []
-        for a in soup.find_all("a", href=True):
-            if "codedew.com/zipper/" in a["href"]:
-                found.append({"label": self._get_label_from_tag(a), "mirrors": [{"url": a["href"], "referer": referer}]})
-        return found
+        potential_links = []
+        seen_urls = set()
+        fallback_counter = 1
 
-    def _get_label_from_tag(self, tag):
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if href in seen_urls: continue
+            
+            is_zipper = "codedew.com/zipper/" in href
+            is_hub = "store.animetoonhindi.com" in href or "/multiquality/" in href
+            
+            if not (is_zipper or is_hub): continue
+            seen_urls.add(href)
+            
+            label = self._get_label_from_tag(a)
+            if label == "Episode/Download":
+                label = f"Episode {fallback_counter}"
+                fallback_counter += 1
+                
+            potential_links.append({"url": href, "label": label, "is_hub": is_hub})
+
+        final_links = []
+        for item in potential_links:
+            if item["is_hub"]:
+                hub_eps = self._extract_hub_links(item["url"])
+                if hub_eps: final_links.extend(hub_eps)
+                else: final_links.append(item)
+            else:
+                final_links.append(item)
+                
+        grouped: Dict[str, List[Dict[str, str]]] = {}
+        for link in final_links:
+            grouped.setdefault(link["label"], []).append({"url": link["url"], "referer": referer})
+            
+        return [{"label": k, "mirrors": v} for k, v in grouped.items()]
+
+    def _extract_hub_links(self, hub_url: str) -> List[Dict[str, Any]]:
+        try:
+            r = self.session.get(hub_url, timeout=15)
+            if r.status_code != 200: return []
+            soup = BeautifulSoup(r.text, "html.parser")
+            eps = []
+            f_count = 1
+            for a in soup.find_all("a", href=True):
+                if "codedew.com/zipper/" in a["href"]:
+                    text = a.get_text(strip=True)
+                    m = self.EP_REGEX.search(text)
+                    label = m.group(1).title() if m else f"Episode {f_count}"
+                    if not m: f_count += 1
+                    eps.append({"url": a["href"], "label": label, "is_hub": False})
+            return eps
+        except: return []
+
+    def _get_label_from_tag(self, tag: Any) -> str:
         text = tag.get_text(" ", strip=True)
         m = self.EP_REGEX.search(text)
-        return m.group(1).title() if m else "Episode"
+        if m: return m.group(1).title()
+        return "Episode/Download"
 
-    def _filter_episodes(self, episodes, start, end):
+    def _filter_episodes(self, episodes: List[Dict], start: Optional[int], end: Optional[int]) -> List[Dict]:
         def get_num(ep):
             m = re.search(r'(\d+)', ep["label"])
             return int(m.group(1)) if m else 0
         filtered = [ep for ep in episodes if (not start or get_num(ep) >= start) and (not end or get_num(ep) <= end)]
         return sorted(filtered, key=get_num)
 
-    def _try_mirrors(self, mirrors):
-        for mirror in mirrors:
+    def _try_mirrors(self, mirrors: List[Dict[str, str]]) -> Optional[List[Dict]]:
+        total = len(mirrors)
+        for i, mirror in enumerate(mirrors, 1):
+            logger.info(f"[*] Trying mirror {i}/{total}...")
             links = self.process_zipper(mirror["url"], mirror["referer"])
             if links: return links
         return None
 
-    def process_zipper(self, url, referer):
+    def process_zipper(self, url: str, referer: str) -> Optional[List[Dict]]:
         try:
             curr_url, curr_ref = url, referer
-            for _ in range(5):
+            logger.info(f"[*] Bypassing zipper gate for: {url}")
+            for step in range(1, 10):
                 resp = self.session.get(curr_url, headers={"Referer": curr_ref}, timeout=15)
+                if resp.status_code != 200: return None
+                
                 token_match = re.search(r'name="rtiwatch"\s+value="([^"]+)"', resp.text)
                 if token_match and token_match.group(1) != "notranslate":
                     return self.process_multiquality(f"{self.MQ_BASE_URL}downlead/{token_match.group(1)}/")
                 
                 soup = BeautifulSoup(resp.text, "html.parser")
-                btn = soup.select_one("a#goBtn, a#mainActionBtn, a.btn-main")
-                if not btn: break
-                curr_ref, curr_url = curr_url, urljoin(self.ROOT_URL, btn["href"])
-                time.sleep(0.5)
+                next_url = self._find_next_button(soup)
+                if not next_url: return None
+                curr_ref, curr_url = curr_url, next_url
+                time.sleep(0.8)
         except: pass
         return None
 
-    def process_multiquality(self, url):
+    def _find_next_button(self, soup: BeautifulSoup) -> Optional[str]:
+        for selector in ["a#goBtn", "a#mainActionBtn", "a.btn-main"]:
+            btn = soup.select_one(selector)
+            if btn and btn.get("href"): return urljoin(self.ROOT_URL, btn["href"])
+        return None
+
+    def process_multiquality(self, url: str) -> Optional[List[Dict]]:
         try:
-            self.session.get(url, headers={"Referer": self.ROOT_URL}, timeout=15)
-            match = re.search(r"window\.juicyData\s*=\s*(\{.*?\});", self.session.get(url).text, re.S)
-            if not match: return None
-            jd = json.loads(match.group(1))["data"]
+            logger.info(f"[*] Fetching final links from MQ page: {url}")
+            resp = self.session.get(url, headers={"Referer": self.ROOT_URL}, timeout=15)
+            if resp.status_code != 200:
+                logger.error(f"[!] MQ Page Error: {resp.status_code}")
+                return None
+                
+            # Robust JuicyData extraction using brace balancing
+            try:
+                start_marker = "window.juicyData ="
+                start_idx = resp.text.find(start_marker)
+                if start_idx == -1:
+                    logger.error("[!] window.juicyData not found on MQ page")
+                    return None
+                
+                # Find the first '{'
+                actual_start = resp.text.find("{", start_idx)
+                if actual_start == -1: return None
+                
+                # Balance braces
+                brace_count = 0
+                in_str = False
+                escape = False
+                jd_str = None
+                
+                for i in range(actual_start, len(resp.text)):
+                    char = resp.text[i]
+                    if char == '"' and not escape:
+                        in_str = not in_str
+                    if not in_str:
+                        if char == '{': brace_count += 1
+                        elif char == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                jd_str = resp.text[actual_start:i+1]
+                                break
+                    escape = (char == '\\' and not escape)
+                
+                if not jd_str:
+                    logger.error("[!] Could not find balanced JSON object for JuicyData")
+                    return None
+                    
+                jd = json.loads(jd_str)["data"]
+                logger.info(f"[*] MQ JD Data Found: {jd.get('links', 'No link route')}")
+            except Exception as e:
+                logger.error(f"[!] JuicyData parse error: {e}")
+                return None
+            logger.info(f"[*] MQ Token found, waiting for links to generate...")
             
-            time.sleep(3)
-            api_resp = self.session.post(
-                urljoin(self.MQ_BASE_URL, jd["routes"]["links"]),
-                headers={"Referer": url, "X-Requested-With": "XMLHttpRequest", "X-XSRF-TOKEN": unquote(self.session.cookies.get("XSRF-TOKEN", ""))},
-                json={"captcha": None, "_token": jd["token"]},
-                timeout=15
-            )
-            data = api_resp.json()
+            # Stable wait for server-side link generation
+            time.sleep(3.5)
+            
+            api_url = urljoin(self.MQ_BASE_URL, jd["routes"]["links"])
+            headers = {
+                "Referer": url,
+                "X-Requested-With": "XMLHttpRequest",
+                "X-XSRF-TOKEN": unquote(self.session.cookies.get("XSRF-TOKEN", ""))
+            }
+            payload = {"captcha": None, "_token": jd["token"]}
+            
+            api_resp = self.session.post(api_url, headers=headers, json=payload, timeout=15)
+            
+            try:
+                data = api_resp.json()
+            except Exception as je:
+                logger.error(f"[!] MQ API JSON Decode Error: {je}")
+                return None
+            
             if data.get("success"):
-                return [{"label": q["label"], "link": q["link"], "metadata": {"referer": url, "cookies": self.session.cookies.get_dict(), "user_agent": self.UA}} for q in data["qualities"]]
-        except: pass
+                qualities = data.get("qualities", [])
+                if not qualities:
+                    logger.warning("[!] MQ API returned success but 0 qualities.")
+                    return []
+                return [{
+                    "label": q["label"], "link": q["link"],
+                    "metadata": {"referer": url, "cookies": self.session.cookies.get_dict(), "user_agent": self.UA}
+                } for q in qualities]
+            else:
+                logger.error(f"[!] MQ API failed: {data.get('message', 'No message')}")
+        except Exception as e:
+            logger.error(f"[!] MQ processing error: {e}")
         return None
 
-    def resolve_filename(self, url, referer=None, cookies=None):
+    def resolve_filename(self, url: str, referer: Optional[str] = None, cookies: Optional[Dict] = None) -> Optional[str]:
         if any(x in url.lower() for x in ["swift", "multiquality", "monster", "leech"]): return None
         try:
             with currequests.Session(impersonate="chrome124") as s:
@@ -241,12 +405,24 @@ class AnimeBot:
         return sorted(list(nums)) if nums else None
 
     async def _handle_rareanimes(self, m, url, selection, status):
-        res = await asyncio.to_thread(RareAnimes().get_links, url, min(selection) if selection else None, max(selection) if selection else None)
-        if "error" in res: return await Utils.safe_edit(status, f"❌ {res['error']}", force=True)
-        eps = res.get("episodes", [])
-        if not eps: return await Utils.safe_edit(status, "❌ No episodes found.", force=True)
-        for i, ep in enumerate(eps, 1):
-            await self._process_episode(m, ep, status, len(eps), i, res.get("series_info"))
+        ep_start = min(selection) if selection else None
+        ep_end = max(selection) if selection else None
+        
+        bypasser = RareAnimes()
+        res = await asyncio.to_thread(bypasser.get_links, url, ep_start, ep_end)
+        
+        if "error" in res:
+            return await Utils.safe_edit(status, f"❌ Error: {res['error']}", force=True)
+            
+        episodes = res.get("episodes", [])
+        if not episodes:
+            return await Utils.safe_edit(status, "❌ No episodes found. (Bypass failed or No Links)", force=True)
+            
+        await Utils.safe_edit(status, f"✅ Found {len(episodes)} episodes. Starting batch processing...")
+        
+        for i, ep in enumerate(episodes, 1):
+            await self._process_episode(m, ep, status, len(episodes), i, res.get("series_info"))
+        
         await status.delete()
 
     async def _handle_hindianime(self, m, url, selection, status):
