@@ -139,43 +139,67 @@ class RareAnimes:
         return url.rstrip("/").split("/")[-1].replace("-", " ").title()
 
     def _extract_episodes(self, html: str, referer: str) -> List[Dict[str, Any]]:
-        """Parses HTML to find and group episode links."""
+        """Parses HTML to find and group episode links using contextual headings."""
         soup = BeautifulSoup(html, "html.parser")
         potential_links = []
         seen_urls = set()
+        last_found_label = None
         fallback_counter = 1
 
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            if href in seen_urls: continue
-            
-            is_zipper = "codedew.com/zipper/" in href
-            is_hub = "store.animetoonhindi.com" in href or "/multiquality/" in href
-            
-            if not (is_zipper or is_hub): continue
-            seen_urls.add(href)
-            
-            label = self._get_label_from_tag(a)
-            if label == "Episode/Download":
-                label = f"Episode {fallback_counter}"
-                fallback_counter += 1
-                
-            potential_links.append({"url": href, "label": label, "is_hub": is_hub})
+        # Walk through all elements that might provide labels or links
+        # We look for text nodes containing "Episode" and <a> tags
+        for element in soup.find_all(["p", "div", "h1", "h2", "h3", "h4", "span", "a"]):
+            if element.name == "a" and element.get("href"):
+                href = element["href"]
+                if "codedew.com" in href or "multiquality" in href:
+                    if href in seen_urls: continue
+                    seen_urls.add(href)
+                    
+                    # Try to get label from tag text
+                    tag_text = element.get_text(strip=True)
+                    tag_label = self.EP_REGEX.search(tag_text)
+                    
+                    current_label = tag_label.group(1).title() if tag_label else last_found_label
+                    if not current_label:
+                        current_label = f"Episode {fallback_counter}"
+                        fallback_counter += 1
+                        
+                    is_hub = any(x in href for x in ["store.animetoonhindi.com", "/multiquality/", "multiquality.click"])
+                    potential_links.append({"url": href, "label": current_label, "is_hub": is_hub})
+            else:
+                # Update last seen label from text nodes
+                text = element.get_text(" ", strip=True)
+                if len(text) < 100: # Ignore very long blocks
+                    m = self.EP_REGEX.search(text)
+                    if m: 
+                        last_found_label = m.group(1).title()
+                        logger.debug(f"[*] Found Heading Label: {last_found_label}")
 
+        # Process hubs and group by episode number
         final_links = []
         for item in potential_links:
             if item["is_hub"]:
                 hub_eps = self._extract_hub_links(item["url"])
-                if hub_eps: final_links.extend(hub_eps)
+                if hub_eps: 
+                    # If hub links don't have good labels, use the hub's label
+                    for h in hub_eps:
+                        if "Episode" not in h["label"]: h["label"] = item["label"]
+                    final_links.extend(hub_eps)
                 else: final_links.append(item)
             else:
                 final_links.append(item)
                 
         grouped: Dict[str, List[Dict[str, str]]] = {}
         for link in final_links:
-            grouped.setdefault(link["label"], []).append({"url": link["url"], "referer": referer})
+            ep_num = self._get_ep_num(link["label"])
+            key = f"Episode {ep_num}" if ep_num else link["label"]
+            grouped.setdefault(key, []).append({"url": link["url"], "referer": referer})
             
-        return [{"label": k, "mirrors": v} for k, v in grouped.items()]
+        return [{"label": k, "mirrors": v} for k, v in sorted(grouped.items(), key=lambda x: self._get_ep_num(x[0]) or 0)]
+
+    def _get_ep_num(self, label: str) -> Optional[int]:
+        m = re.search(r'(\d+)', label)
+        return int(m.group(1)) if m else None
 
     def _extract_hub_links(self, hub_url: str) -> List[Dict[str, Any]]:
         try:
@@ -219,26 +243,80 @@ class RareAnimes:
         try:
             curr_url, curr_ref = url, referer
             logger.info(f"[*] Bypassing zipper gate for: {url}")
-            for step in range(1, 10):
+            for step in range(1, 12):
                 resp = self.session.get(curr_url, headers={"Referer": curr_ref}, timeout=15)
                 if resp.status_code != 200: return None
                 
+                # Plan A: Search for direct tokens or MQ links in HTML
+                # Look for rtiwatch (Old but still used sometimes)
                 token_match = re.search(r'name="rtiwatch"\s+value="([^"]+)"', resp.text)
-                if token_match and token_match.group(1) != "notranslate":
+                if token_match and token_match.group(1) not in ["notranslate", ""]:
                     return self.process_multiquality(f"{self.MQ_BASE_URL}downlead/{token_match.group(1)}/")
                 
+                # Look for multiquality/downlead links
+                mq_link = re.search(r'https?://(?:swift\.)?multiquality\.click/downlead/([^/\"\'\s>]+)', resp.text)
+                if mq_link:
+                    return self.process_multiquality(f"{self.MQ_BASE_URL}downlead/{mq_link.group(1)}/")
+                
+                # Look for ziptron, liptron or multiquality internal links
+                token_link = re.search(r'/(?:ziptron\.php|liptron\.php|multiquality)/\?(?:url|id)=([^/\"\'\s>&\#]+)', resp.text)
+                if token_link:
+                    token = token_link.group(1)
+                    # If it's short base64, it might be the token. If it's very long, it might be an encrypted URL (ignore)
+                    if 10 < len(token) < 40:
+                        return self.process_multiquality(f"{self.MQ_BASE_URL}downlead/{token}/")
+                
+                # Look for tokens in JS variables (Token Hunter)
+                # We focus on script tags to avoid catching UI element IDs like "progress-fill"
+                scripts = re.findall(r'<script.*?>\s*(.*?)\s*</script>', resp.text, re.DOTALL | re.I)
+                potential_tokens = []
+                
+                # Regex for variables: fid, fileId, video_id, token, id (if in script)
+                for script in scripts:
+                    found = re.findall(r'(?:fid|fileId|video_id|token|["\']id["\'])\s*[:=]\s*["\']([a-zA-Z0-9_\-]{14,40})["\']', script, re.I)
+                    potential_tokens.extend(found)
+                
+                # Also check for liptron/ziptron links anywhere
+                url_tokens = re.findall(r'/(?:ziptron\.php|liptron\.php|multiquality)/\?(?:url|id)=([a-zA-Z0-9_\-]{13,40})', resp.text)
+                potential_tokens.extend(url_tokens)
+
+                for token in potential_tokens:
+                    # Filter out common false positives
+                    if any(x in token.lower() for x in ["wrapper", "container", "loader", "progress", "button", "player"]):
+                        continue
+                    
+                    logger.info(f"[+] Token Hunter found potential token: {token}")
+                    links = self.process_multiquality(f"{self.MQ_BASE_URL}downlead/{token}/")
+                    if links: return links
+
+                # Plan B: Follow the "Next" link chain
                 soup = BeautifulSoup(resp.text, "html.parser")
-                next_url = self._find_next_button(soup)
+                next_url = self._find_next_button(soup, curr_url)
+                if not next_url:
+                    # Final attempt: just look for ANY gate-like link that isn't the current one
+                    for a in soup.find_all("a", href=True):
+                        href = urljoin(curr_url, a["href"])
+                        is_gate = any(x in href for x in ["/zipper/", "/watchbeta/", "/watch/", "/multiquality/"])
+                        if is_gate and href != curr_url and not href.startswith("javascript:"):
+                            next_url = href
+                            break
+                
                 if not next_url: return None
+                logger.info(f"[*] Step {step}: Jumping to {next_url[:60]}...")
                 curr_ref, curr_url = curr_url, next_url
-                time.sleep(0.8)
-        except: pass
+                time.sleep(1.0)
+        except Exception as e:
+            logger.error(f"[!] Zipper bypass error: {e}")
         return None
 
-    def _find_next_button(self, soup: BeautifulSoup) -> Optional[str]:
-        for selector in ["a#goBtn", "a#mainActionBtn", "a.btn-main"]:
+    def _find_next_button(self, soup: BeautifulSoup, current_url: str) -> Optional[str]:
+        # High-priority button selectors
+        for selector in ["a#goBtn", "a#mainActionBtn", "a.btn-main", "a.btn-success", "a.btn-primary"]:
             btn = soup.select_one(selector)
-            if btn and btn.get("href"): return urljoin(self.ROOT_URL, btn["href"])
+            if btn and btn.get("href"):
+                url = urljoin(self.ROOT_URL, btn["href"])
+                if url != current_url and not url.startswith("javascript:"):
+                    return url
         return None
 
     def process_multiquality(self, url: str) -> Optional[List[Dict]]:
