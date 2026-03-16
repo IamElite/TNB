@@ -8,10 +8,14 @@ import json
 import re
 import logging
 import shutil
+import urllib3
+import traceback
 from typing import List, Dict, Optional, Any, Tuple, Union
 from threading import Thread
 from contextlib import redirect_stdout
 from urllib.parse import urlparse, unquote, urljoin
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from pyrogram import Client, filters
 from pyrogram.types import Message
@@ -468,7 +472,7 @@ class AnimeBot:
         
         for i, ep in enumerate(episodes, 1):
             logger.info(f"[*] Dispatching Episode {i}/{len(episodes)}: {ep.get('episode')}")
-            await self._process_episode(m, ep, status, len(episodes), i, res.get("series_info"))
+            await self._process_episode(m, ep, bypasser, status, len(episodes), i, res.get("series_info"))
         
         await status.delete()
 
@@ -479,7 +483,7 @@ class AnimeBot:
             await self._process_episode(m, ep, status, len(eps), i, ep.get("series_info"))
         await status.delete()
 
-    async def _process_episode(self, m, ep, status, total, current, series_info):
+    async def _process_episode(self, m, ep, bypasser, status, total, current, series_info):
         downloads = sorted(ep.get("downloads", []), key=lambda x: self._q_val(x.get('label')))
         logger.info(f"[*] Episode {current}/{total} has {len(downloads)} download links.")
         if not downloads:
@@ -491,7 +495,8 @@ class AnimeBot:
         for dl in downloads:
             url, meta, label = dl['link'], dl.get('metadata', {}), dl.get('label', 'N/A')
             await Utils.safe_edit(status, f"🔍 **Resolving {label}...**", force=True)
-            fname = await asyncio.to_thread(RareAnimes().resolve_filename, url, meta.get('referer'), meta.get('cookies'))
+            logger.info(f"[*] Resolving filename for {label}: {url[:60]}...")
+            fname = await asyncio.to_thread(bypasser.resolve_filename, url, meta.get('referer'), meta.get('cookies'))
             
             if not fname or len(fname) < 5:
                 ep_num = re.search(r'(\d+)', ep.get('episode', ''))
@@ -511,22 +516,37 @@ class AnimeBot:
     async def _download_manager(self, url, path, status, meta):
         ua, cookies = meta.get('user_agent', Config.DEFAULT_UA), meta.get('cookies', {})
         is_sensitive = any(x in url.lower() for x in ["monster", "swift", "multiquality", "downlead"])
-        if is_sensitive: await self._warmup_mirror(f"https://{urlparse(url).netloc}/", ua, cookies)
+        if is_sensitive:
+            logger.info(f"[*] Warming up mirror for sensitive link: {urlparse(url).netloc}")
+            await self._warmup_mirror(f"https://{urlparse(url).netloc}/", ua, cookies)
         
-        conn = "1" if is_sensitive else "16"
-        cmd = ["aria2c", "-x", conn, "-s", conn, "--out", path, "--user-agent", ua, "--check-certificate=false",
+        conn = "1" if is_sensitive else "12"
+        # Split path into dir and file for aria2c
+        directory, filename = os.path.split(path)
+        
+        cmd = ["aria2c", "-x", conn, "-s", conn, "-d", directory, "-o", filename, "--user-agent", ua, "--check-certificate=false",
                "--header", "Sec-CH-UA-Platform: \"Linux\"", "--header", "Sec-CH-UA: \"Chromium\";v=\"124\"", url]
         if meta.get('referer'): cmd.extend(["--referer", meta['referer']])
         if cookies: cmd.extend(["--header", f"Cookie: {'; '.join([f'{k}={v}' for k, v in cookies.items()])}"])
         
-        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-        while True:
-            line = await proc.stdout.readline()
-            if not line: break
-            m = re.search(r'\((\d+)%\).*?SPD:([\d\.]+[KMG]i?B)', line.decode('utf-8', 'ignore'))
-            if m: await Utils.safe_edit(status, f"🚀 **Downloading** [{m.group(1)}%]\n**Speed**: {m.group(2)}/s")
-        await proc.wait()
-        return proc.returncode == 0 and os.path.exists(path)
+        logger.info(f"[*] Starting aria2c: {' '.join(cmd[:10])}...")
+        try:
+            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            while True:
+                line = await proc.stdout.readline()
+                if not line: break
+                line_str = line.decode('utf-8', 'ignore')
+                m = re.search(r'\((\d+)%\).*?SPD:([\d\.]+[KMG]i?B)', line_str)
+                if m: 
+                    await Utils.safe_edit(status, f"🚀 **Downloading** [{m.group(1)}%]\n**Speed**: {m.group(2)}/s")
+                elif "ERROR" in line_str.upper():
+                    logger.error(f"[!] aria2c error: {line_str.strip()}")
+            await proc.wait()
+            logger.info(f"[*] aria2c finished with code: {proc.returncode}")
+            return proc.returncode == 0 and os.path.exists(path)
+        except Exception as e:
+            logger.error(f"[!] Failed to start aria2c: {e}")
+            return False
 
     async def _upload_file(self, m, fpath, status, current, total, label, series_info):
         w, h, dur = await self._get_video_meta(fpath)
