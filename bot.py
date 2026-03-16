@@ -157,6 +157,7 @@ class RareAnimes:
         for element in soup.find_all(["p", "div", "h1", "h2", "h3", "h4", "span", "a"]):
             if element.name == "a" and element.get("href"):
                 href = element["href"]
+                tag_text = element.get_text(strip=True)
                 # Detect hub or download link
                 is_valid = any(x in href for x in ["codedew.com", "multiquality", "store.animetoonhindi.com", "mega.nz", "drive.google.com"])
                 # Also treat as hub if text suggests it
@@ -167,7 +168,6 @@ class RareAnimes:
                     seen_urls.add(href)
                     
                     # Try to get label from tag text
-                    tag_text = element.get_text(strip=True)
                     tag_label = self.EP_REGEX.search(tag_text)
                     
                     current_label = tag_label.group(1).title() if tag_label else last_found_label
