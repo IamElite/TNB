@@ -370,13 +370,13 @@ class RareAnimes:
     def resolve_filename(self, url: str, referer: Optional[str] = None, cookies: Optional[Dict] = None) -> Optional[str]:
         if any(x in url.lower() for x in ["swift", "multiquality", "leech"]): return None
         try:
-            with currequests.Session(impersonate="chrome124") as s:
-                if cookies: s.cookies.update(cookies)
-                res = s.head(url, headers={"Referer": referer or self.ROOT_URL, "User-Agent": self.UA}, allow_redirects=True, timeout=10)
-                cd = res.headers.get("Content-Disposition", "")
-                m = re.search(r'filename\*=utf-8\'\'(.+)|filename="(.+)"|filename=(.+)', cd, re.I)
-                if m: return unquote(m.group(1) or m.group(2) or m.group(3))
-                return os.path.basename(urlparse(res.url).path)
+            import requests as py_requests
+            headers = {"Referer": referer or self.ROOT_URL, "User-Agent": self.UA}
+            res = py_requests.head(url, headers=headers, cookies=cookies, allow_redirects=True, timeout=10, verify=False)
+            cd = res.headers.get("Content-Disposition", "")
+            m = re.search(r'filename\*=utf-8\'\'(.+)|filename="(.+)"|filename=(.+)', cd, re.I)
+            if m: return unquote(m.group(1) or m.group(2) or m.group(3))
+            return os.path.basename(urlparse(res.url).path)
         except: return None
 
 # --- UTILITIES ---
@@ -481,8 +481,9 @@ class AnimeBot:
 
     async def _process_episode(self, m, ep, status, total, current, series_info):
         downloads = sorted(ep.get("downloads", []), key=lambda x: self._q_val(x.get('label')))
+        logger.info(f"[*] Episode {current}/{total} has {len(downloads)} download links.")
         if not downloads:
-            logger.warning(f"[!] No valid download links for episode: {ep.get('episode')}. Skipping.")
+            logger.warning(f"[!] No valid download links for episode: {ep.get('episode') or 'Unknown'}. Skipping.")
             return
         req_dir = os.path.join(Config.DOWNLOAD_DIR, str(m.id))
         if not os.path.exists(req_dir): os.makedirs(req_dir)
@@ -601,10 +602,8 @@ class AnimeBot:
 
     async def _warmup_mirror(self, url, ua, cookies):
         try:
-            with currequests.Session(impersonate="chrome124") as s:
-                if cookies: s.cookies.update(cookies)
-                s.get(url, headers={"User-Agent": ua}, timeout=10)
-                cookies.update(s.cookies.get_dict())
+            import requests as py_requests
+            py_requests.get(url, headers={"User-Agent": ua}, cookies=cookies, timeout=10, verify=False)
         except: pass
 
     def run(self):
