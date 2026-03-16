@@ -260,9 +260,21 @@ class AnimeBot:
             # Sync session with bypasser for maximum compatibility
             referer = meta.get('referer', '')
             ua = meta.get('user_agent', Config.DEFAULT_UA)
+            cookies = meta.get('cookies', {})
+            
+            # Mirror Warmup: Established session cookies for generative mirrors
+            is_sensitive = any(x in url.lower() for x in ["monster", "swift", "multiquality", "downlead", "generate", "leech"])
+            if is_sensitive:
+                domain = urlparse(url).netloc
+                logger.info(f"[*] Mirror Warmup for: {domain}")
+                await self._warmup_mirror(f"https://{domain}/", ua, cookies)
+            
+            # Strategy: Single-connection for sensitive/tokenized mirrors to avoid consumption
+            # Multi-connection often triggers 403 on one-time download links.
+            conn_count = "1" if is_sensitive else "16"
             
             cmd = [
-                "aria2c", "-x", "16", "-s", "16", "-k", "1M",
+                "aria2c", "-x", conn_count, "-s", conn_count, "-k", "1M",
                 "--out", path, "--file-allocation=none", "--continue=true",
                 "--user-agent", ua,
                 "--header", "Accept: */*",
@@ -275,8 +287,8 @@ class AnimeBot:
                 url
             ]
             if referer: cmd.extend(["--referer", referer])
-            if meta.get('cookies'):
-                c_str = "; ".join([f"{k}={v}" for k, v in meta['cookies'].items()])
+            if cookies:
+                c_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
                 cmd.extend(["--header", f"Cookie: {c_str}"])
 
             proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
@@ -299,7 +311,7 @@ class AnimeBot:
         try:
             # Sync session with bypasser for maximum compatibility
             with currequests.Session(impersonate="chrome124") as s:
-                if meta.get('cookies'): s.cookies.update(meta['cookies'])
+                if cookies: s.cookies.update(cookies)
                 logger.info(f"[*] Fallback download starting (Chrome 124): {url[:60]}...")
                 
                 # Professional headers synced with working debug Strategy A
@@ -381,6 +393,18 @@ class AnimeBot:
         cap += f"\n│ 📺 **Episode:** {info['episode'] or 'N/A'}"
         cap += f"\n│ 🌐 **Language:** Hindi\n│ 📊 **Quality:** {q_str}\n│ 📦 **Size:** {Utils.human_bytes(size)}\n│ ⏱️ **Duration:** {Utils.time_formatter(dur*1000)}\n╰━━━━━━━━━━━━━━━━━━━╯"
         return cap
+
+    async def _warmup_mirror(self, url: str, ua: str, cookies: Dict):
+        """Visits the mirror root to establish session context/cookies."""
+        try:
+            headers = {"User-Agent": ua, "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
+            with currequests.Session(impersonate="chrome124") as s:
+                if cookies: s.cookies.update(cookies)
+                s.get(url, headers=headers, timeout=10)
+                # Update original cookies dict with any new mirror cookies
+                cookies.update(s.cookies.get_dict())
+        except Exception as e:
+            logger.debug(f"Warmup fail: {e}")
 
     def _parse_filename(self, text: str) -> Dict:
         data = {"name": "Unknown", "season": None, "episode": None, "year": None, "is_movie": False}
