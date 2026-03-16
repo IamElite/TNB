@@ -5,3 +5,4 @@ beautifulsoup4
 aiohttp
 curl_cffi
 flask
+psutil

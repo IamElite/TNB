@@ -10,6 +10,7 @@ import logging
 import shutil
 import urllib3
 import traceback
+import psutil
 from typing import List, Dict, Optional, Any, Tuple, Union
 from threading import Thread
 from contextlib import redirect_stdout
@@ -465,9 +466,69 @@ class RareAnimes:
         f = int(l * p / 100)
         return f"[{'█'*f}{'░'*(l-f)}]"
 
+    @staticmethod
+    def get_system_stats():
+        try:
+            cpu = psutil.cpu_percent()
+            ram = psutil.virtual_memory().used / (1024 * 1024)
+            
+            # Net Speed Logic
+            now = time.time()
+            io = psutil.net_io_counters()
+            
+            if Utils._NET_IO is None:
+                Utils._NET_IO = io
+                Utils._NET_TIME = now
+                net_mbps = 0.0
+                net_mib = 0.0
+            else:
+                dt = max(now - Utils._NET_TIME, 0.1)
+                t_bytes = (io.bytes_sent - Utils._NET_IO.bytes_sent) + (io.bytes_recv - Utils._NET_IO.bytes_recv)
+                net_mbps = (t_bytes * 8) / (1024 * 1024 * dt)
+                net_mib = (io.bytes_recv - Utils._NET_IO.bytes_recv) / (1024 * 1024 * dt)
+                
+                Utils._NET_IO = io
+                Utils._NET_TIME = now
+                
+            return cpu, ram, net_mbps, net_mib
+        except Exception as e:
+            logger.error(f"Error in get_system_stats: {e}")
+            return 0, 0, 0, 0
+
+    @staticmethod
+    def get_eta(current, total, speed):
+        if not speed or speed <= 0: return "00:00"
+        remaining = (total - current) / speed
+        return Utils.time_formatter(remaining * 1000)
+
+    @staticmethod
+    def format_progress(filename, status_icon, status_text, p, speed, curr_size, tot_size, start_time):
+        cpu, ram, net_mbps, net_mib = Utils.get_system_stats()
+        eta = Utils.get_eta(curr_size, tot_size, speed)
+        bar = Utils.progress_bar(p, l=10)
+        
+        # Format metrics
+        spd_str = f"{Utils.human_bytes(speed)}/s"
+        sz_curr = Utils.human_bytes(curr_size)
+        sz_tot = Utils.human_bytes(tot_size) if tot_size else "???"
+        
+        # Box drawing UI
+        res = f"🚀 `{filename}`\n\n"
+        res += f"┌ Status  : {status_icon} **{status_text}** {status_icon}\n"
+        res += f"├ {bar} **{p:.1f}%**\n"
+        res += f"├ ⚡ **Speed**   : `{spd_str}`\n"
+        res += f"├ 📦 **Size**    : `{sz_curr} / {sz_tot}`\n"
+        res += f"└ ⏱ **ETA**     : `{eta}`\n\n"
+        res += f"🖥 **CPU**: `{cpu}%` | 💾 **RAM**: `{int(ram)}MB`"
+        res += f"\n🌐 **Net**: `{net_mbps:.1f} Mbps` | ⬇ `{net_mib:.1f} MiB/s`"
+        
+        return res
+
 # --- UTILITIES ---
 class Utils:
     EDIT_STATES: Dict[int, Dict[str, Any]] = {}
+    _NET_IO = None
+    _NET_TIME = None
 
     @staticmethod
     def human_bytes(size: float) -> str:
@@ -645,12 +706,27 @@ class AnimeBot:
                 line = await proc.stdout.readline()
                 if not line: break
                 line_str = line.decode('utf-8', 'ignore')
-                m = re.search(r'\((\d+)%\).*?SPD:([\d\.]+[KMG]i?B)', line_str)
-                if m: 
-                    p = int(m.group(1))
-                    bar = Utils.progress_bar(p)
+                # Improved regex for aria2c: [#2089ad 4.0MiB/3.8GiB(0%) CN:1 SPD:6.2MiB/s ETA:10m31s]
+                m = re.search(r'([\d\.]+[KMG]i?B)/([\d\.]+[KMG]i?B)\((\d+)%\).*?SPD:([\d\.]+[KMG]i?B).*?ETA:([\w\d]+)', line_str)
+                if m:
+                    curr_sz_str, tot_sz_str, p_str, spd_str, eta_str = m.groups()
+                    p = int(p_str)
                     fname = os.path.basename(path)
-                    await Utils.safe_edit(status, f"🚀 **Downloading**: `{fname}`\n{bar} **{p}%**\n**Speed**: {m.group(2)}/s")
+                    
+                    # Compute system stats and net
+                    cpu, ram, net_mbps, net_mib = Utils.get_system_stats()
+                    bar = Utils.progress_bar(p, l=10)
+                    
+                    msg = f"🚀 `{fname}`\n\n"
+                    msg += f"┌ Status  : ⏬ **Downloading** ⏬\n"
+                    msg += f"├ {bar} **{p}%**\n"
+                    msg += f"├ ⚡ **Speed**   : `{spd_str}/s`\n"
+                    msg += f"├ 📦 **Size**    : `{curr_sz_str} / {tot_sz_str}`\n"
+                    msg += f"└ ⏱ **ETA**     : `{eta_str}`\n\n"
+                    msg += f"🖥 **CPU**: `{cpu}%` | 💾 **RAM**: `{int(ram)}MB`"
+                    msg += f"\n🌐 **Net**: `{net_mbps:.1f} Mbps` | ⬇ `{net_mib:.1f} MiB/s`"
+                    
+                    await Utils.safe_edit(status, msg)
                 elif "ERROR" in line_str.upper():
                     logger.error(f"[!] aria2c error: {line_str.strip()}")
             await proc.wait()
@@ -685,10 +761,12 @@ class AnimeBot:
                             curr += len(chunk)
                             if time.time() - last_up > 4:
                                 p = curr * 100 / total if total else 0
-                                bar = Utils.progress_bar(p)
                                 fname = os.path.basename(path)
                                 speed = curr / (time.time() - start_t)
-                                await Utils.safe_edit(status, f"🚀 **Downloading (Fallback)**: `{fname}`\n{bar} **{p:.1f}%**\n**Speed**: {Utils.human_bytes(speed)}/s")
+                                
+                                # Advanced Box UI
+                                msg = Utils.format_progress(fname, "⏬", "Downloading (Fallback)", p, speed, curr, total, start_t)
+                                await Utils.safe_edit(status, msg)
                                 last_up = time.time()
             return os.path.exists(path) and os.path.getsize(path) > 1000
         except Exception as e:
@@ -765,8 +843,10 @@ class AnimeBot:
     async def _upload_progress(self, cur, tot, ud, msg, start, fname):
         p = cur*100/tot if tot else 0
         if time.time() - getattr(self, '_last_up', 0) > 4:
-            bar = Utils.progress_bar(p)
-            await Utils.safe_edit(msg, f"{ud}: `{fname}`\n{bar} **{p:.1f}%**")
+            speed = cur / (time.time() - start) if (time.time() - start) > 0 else 0
+            # Advanced Box UI
+            msg_text = Utils.format_progress(fname, "⏫", ud, p, speed, cur, tot, start)
+            await Utils.safe_edit(msg, msg_text)
             self._last_up = time.time()
 
     async def _warmup_mirror(self, url, ua, cookies):
