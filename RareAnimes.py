@@ -45,26 +45,36 @@ class RareAnimes:
         self.metadata: Dict[str, Any] = {}
 
     def _init_session(self) -> currequests.Session:
-        """Initialize a high-fidelity browser session."""
+        """Initialize a high-fidelity browser session with professional headers."""
         session = currequests.Session(impersonate="chrome124")
         session.headers.update({
             "User-Agent": self.UA,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
             "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br, zstd",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
+            "DNT": "1",
+            "Sec-CH-UA": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+            "Sec-CH-UA-Mobile": "?0",
+            "Sec-CH-UA-Platform": '"Windows"'
         })
         return session
 
     def init_session(self) -> None:
-        """Warms up the session by visiting entry points."""
+        """Warms up the session by visiting entry points to establish cookies."""
         if self.initialized:
             return
         try:
             logger.info("[*] Warming up session...")
+            # Step A: Visit RareAnimes to establish site-level cookies
             self.session.get("https://rareanimes.app/", timeout=15)
-            # Ensure ROOT_URL is visited to establish domain-level cookies
+            time.sleep(1.0)
+            # Step B: Visit codedew (gate) with referer
             self.session.get(self.ROOT_URL, timeout=15, headers={"Referer": "https://rareanimes.app/"})
+            # Step C: Visit MQ Base to establish PHPSESSID before bypass
+            self.session.get(self.MQ_BASE_URL, timeout=15, headers={"Referer": self.ROOT_URL})
+            
             self.initialized = True
         except Exception as e:
             logger.warning(f"[!] Session warmup partially failed: {e}")
@@ -343,56 +353,86 @@ class RareAnimes:
         return None
 
     def process_multiquality(self, url: str) -> Optional[List[Dict]]:
-        """Handles the multi-quality page API to get direct links."""
+        """Handles the multi-quality page API to get direct links with retry logic."""
         try:
             logger.info(f"[*] Fetching final links from MQ page: {url}")
+            # Visit the page to establish cookies/session
             resp = self.session.get(url, headers={"Referer": self.ROOT_URL}, timeout=15)
+            
             # Extract JuicyData JSON
             jd = self._extract_juicy_data(resp.text)
             if not jd or not jd.get("token"): 
-                logger.error("Failed to extract JuicyData or token")
+                logger.error("Step 4 Error: Failed to extract JuicyData or token from MQ page")
                 return None
             
             # API interaction
             token = jd["token"]
             links_api = urljoin(self.MQ_BASE_URL, jd["routes"]["links"])
             
-            # Optional ping
+            # Step 4a: Optional ping/Establishment
             if jd.get("routes", {}).get("ping"):
                 ping_url = urljoin(self.MQ_BASE_URL, jd["routes"]["ping"])
-                self.session.post(ping_url, headers={"Referer": url}, timeout=5)
+                try:
+                    self.session.post(ping_url, headers={"Referer": url}, timeout=5)
+                except: pass
             
-            time.sleep(1.0)
-            api_resp = self.session.post(
-                links_api,
-                headers={
-                    "Referer": url,
-                    "X-Requested-With": "XMLHttpRequest",
-                    "Content-Type": "application/json"
-                },
-                json={"captcha": None, "_token": token},
-                timeout=15
-            )
+            # Step 4b: Mandatory wait for backend to prepare links (important for MQ sites)
+            logger.info("[*] Waiting for links to generate (3s)...")
+            time.sleep(3.0)
             
-            data = api_resp.json()
-            if data.get("success") and data.get("qualities"):
-                results = []
-                for q in data["qualities"]:
-                    label = q.get("label") or q.get("quality") or "N/A"
-                    logger.info(f"  [+] Found quality: {label} ({q.get('size')})")
-                    results.append({
-                        "label": label,
-                        "size": q.get("size"),
-                        "link": q["link"],
-                        "metadata": {
-                            "cookies": self.session.cookies.get_dict(),
-                            "referer": url,
-                            "user_agent": self.UA
-                        }
-                    })
-                return results
+            # Step 4c: API Call with retries
+            for attempt in range(1, 3):
+                logger.info(f"[*] Posting to Links API (Attempt {attempt})...")
+                api_resp = self.session.post(
+                    links_api,
+                    headers={
+                        "Referer": url,
+                        "Origin": self.MQ_BASE_URL.rstrip("/"),
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Content-Type": "application/json",
+                        "Accept": "application/json, text/javascript, */*; q=0.01"
+                    },
+                    json={"captcha": None, "_token": token},
+                    timeout=15
+                )
+                
+                if api_resp.status_code != 200:
+                    logger.warning(f"Step 4 Warning: API returned status {api_resp.status_code}")
+                    time.sleep(2.0)
+                    continue
+
+                try:
+                    data = api_resp.json()
+                except Exception as e:
+                    logger.error(f"Step 4 Error: Failed to parse API JSON: {e}")
+                    return None
+
+                if data.get("success") and data.get("qualities"):
+                    results = []
+                    for q in data["qualities"]:
+                        label = q.get("label") or q.get("quality") or "N/A"
+                        logger.info(f"  [+] Found quality: {label} ({q.get('size')})")
+                        results.append({
+                            "label": label,
+                            "size": q.get("size"),
+                            "link": q["link"],
+                            "metadata": {
+                                "cookies": self.session.cookies.get_dict(),
+                                "referer": url,
+                                "user_agent": self.UA
+                            }
+                        })
+                    return results
+                else:
+                    msg = data.get("message", "Unknown error")
+                    logger.warning(f"Step 4 Warning: API Success False. Message: {msg}")
+                    if attempt == 1:
+                        logger.info("[*] Retrying after extra delay...")
+                        time.sleep(3.0)
+            
+            logger.error("Step 4 Error: Failed to fetch qualities after retries.")
         except Exception as e:
-            logger.debug(f"MQ API error: {e}")
+            logger.error(f"MQ API error: {e}", exc_info=True)
         return None
 
     def _extract_juicy_data(self, html: str) -> Optional[Dict]:

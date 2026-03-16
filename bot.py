@@ -287,8 +287,15 @@ class AnimeBot:
         
         series_name = None
         if series_info:
-            series_name = self._parse_filename(series_info.split("|")[0].split("-")[0].strip())['name']
-            series_name = self._clean_noise(series_name)
+            # If it's already a clean Full Name from the scraper, use it as is
+            # but try to remove common noise just in case.
+            # Only split if it looks like a typical messy page title (has | or - and is long)
+            if ("|" in series_info or "-" in series_info) and len(series_info) > 30:
+                series_name_dirty = series_info.split("|")[0].split("-")[0].strip()
+            else:
+                series_name_dirty = series_info.strip()
+            
+            series_name = self._clean_noise(self._parse_filename(series_name_dirty)['name'])
             
         fname_clean = self._clean_noise(info['name'])
         
