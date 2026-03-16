@@ -807,20 +807,33 @@ class AnimeBot:
         name = self._clean_noise(series_info or info['name'])
         q = re.search(r'(\d{3,4}p)', path, re.I)
         q_str = q.group(1).upper() if q else "720P"
-        return f"🎬 **{name}**\n╭━━━━━━━━━━━━━━━━━━━╮\n│ 📺 **Episode:** {info['episode'] or 'N/A'}\n│ 🌐 **Language:** Hindi\n│ 📊 **Quality:** {q_str}\n│ 📦 **Size:** {Utils.human_bytes(size)}\n│ ⏱️ **Duration:** {Utils.time_formatter(dur*1000)}\n╰━━━━━━━━━━━━━━━━━━━╯"
+        
+        cap = f"🎬 **{name}**\n╭━━━━━━━━━━━━━━━━━━━╮\n"
+        if info.get('season'):
+            cap += f"│ 🏝️ **Season:** {info['season']}\n"
+        cap += f"│ 📺 **Episode:** {info['episode'] or 'N/A'}\n"
+        cap += f"│ 🌐 **Language:** Hindi\n│ 📊 **Quality:** {q_str}\n│ 📦 **Size:** {Utils.human_bytes(size)}\n│ ⏱️ **Duration:** {Utils.time_formatter(dur*1000)}\n╰━━━━━━━━━━━━━━━━━━━╯"
+        return cap
 
     def _parse_filename(self, text):
         data = {"name": "Unknown", "season": None, "episode": None, "year": None}
         yr = re.search(r'\((19|20)\d{2}\)', text)
         if yr: data["year"] = yr.group(0).strip('()')
+        
+        # Season detection
+        s = re.search(r'S(\d+)|Season\s*(\d+)', text, re.I)
+        if s: data["season"] = (s.group(1) or s.group(2)).zfill(2)
+        
         e = re.search(r'E(\d+)|Episode\s*(\d+)', text, re.I)
         if e: data["episode"] = (e.group(1) or e.group(2)).zfill(2)
         data["name"] = self._clean_noise(re.sub(r'\(.*?\)|\[.*?\]', '', text.split('.')[0]))
         return data
 
     def _clean_noise(self, text):
-        noise = r'Dubbed|Hindi|Dual|Audio|Multi|Episodes?|Downloads?|Full|Series|Zon-E'
-        return re.sub(r'\s+', ' ', re.sub(noise, '', text, flags=re.I).replace('.', ' ').replace('_', ' ')).strip()
+        # Aggressive removal of Season, HD, and other tags
+        noise = r'Dubbed|Hindi|Dual|Audio|Multi|Episodes?|Downloads?|Full|Series|Zon-E|HD|BluRay|FHD|SD|Season\s*\d+|S\d+'
+        cleaned = re.sub(noise, '', text, flags=re.I).replace('.', ' ').replace('_', ' ')
+        return re.sub(r'\s+', ' ', cleaned).strip()
 
     def _q_val(self, label):
         m = re.search(r'(\d+)', str(label))
