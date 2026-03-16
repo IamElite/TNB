@@ -257,15 +257,24 @@ class AnimeBot:
 
     async def _download_manager(self, url: str, path: str, status: Message, meta: Dict) -> bool:
         try:
+            # Sync session with bypasser for maximum compatibility
+            referer = meta.get('referer', '')
+            ua = meta.get('user_agent', Config.DEFAULT_UA)
+            
             cmd = [
                 "aria2c", "-x", "16", "-s", "16", "-k", "1M",
                 "--out", path, "--file-allocation=none", "--continue=true",
-                "--user-agent", Config.DEFAULT_UA,
-                "--header", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                "--user-agent", ua,
+                "--header", "Accept: */*",
+                "--header", "Accept-Language: en-US,en;q=0.9",
                 "--header", "Connection: keep-alive",
+                "--header", "Upgrade-Insecure-Requests: 1",
+                "--header", "Sec-Fetch-Dest: document",
+                "--header", "Sec-Fetch-Mode: navigate",
+                "--header", "Sec-Fetch-Site: cross-site",
                 url
             ]
-            if meta.get('referer'): cmd.extend(["--referer", meta['referer']])
+            if referer: cmd.extend(["--referer", referer])
             if meta.get('cookies'):
                 c_str = "; ".join([f"{k}={v}" for k, v in meta['cookies'].items()])
                 cmd.extend(["--header", f"Cookie: {c_str}"])
@@ -293,13 +302,16 @@ class AnimeBot:
                 if meta.get('cookies'): s.cookies.update(meta['cookies'])
                 logger.info(f"[*] Fallback download starting (Chrome 124): {url[:60]}...")
                 
-                # Professional headers
+                # Professional headers synced with working debug Strategy A
                 headers = {
                     "Referer": meta.get('referer', ''),
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                    "Accept": "*/*",
                     "Accept-Language": "en-US,en;q=0.9",
                     "Connection": "keep-alive",
-                    "Upgrade-Insecure-Requests": "1"
+                    "Upgrade-Insecure-Requests": "1",
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "cross-site",
                 }
                 # Inject XSRF token if found in cookies (common for Laravel MQ API)
                 xsrf_token = s.cookies.get("XSRF-TOKEN")
@@ -308,7 +320,7 @@ class AnimeBot:
                 r = s.get(url, stream=True, headers=headers, timeout=60, allow_redirects=True)
                 
                 if r.status_code != 200:
-                    logger.error(f"[*] Fallback failed (Status {r.status_code}). Body: {r.text[:100]}...")
+                    logger.error(f"[*] Fallback failed (Status {r.status_code}). Body: {r.text[:300]}...")
                     return False
                     
                 total_size = int(r.headers.get('content-length', 0))
