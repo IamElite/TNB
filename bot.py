@@ -293,9 +293,22 @@ class RareAnimes:
             
             api_url = urljoin(self.MQ_BASE_URL, jd["routes"]["links"])
             headers = {
+                "Host": urlparse(self.MQ_BASE_URL).netloc,
+                "Origin": self.MQ_BASE_URL.rstrip("/"),
                 "Referer": url,
+                "User-Agent": self.UA,
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Content-Type": "application/json",
                 "X-Requested-With": "XMLHttpRequest",
-                "X-XSRF-TOKEN": unquote(self.session.cookies.get("XSRF-TOKEN", ""))
+                "X-XSRF-TOKEN": unquote(self.session.cookies.get("XSRF-TOKEN", "")),
+                "Sec-CH-UA": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+                "Sec-CH-UA-Mobile": "?0",
+                "Sec-CH-UA-Platform": '"Linux"',
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+                "DNT": "1"
             }
             payload = {"captcha": None, "_token": jd["token"]}
             
