@@ -11,16 +11,16 @@ import shutil
 from typing import List, Dict, Optional, Any, Tuple, Union
 from threading import Thread
 from contextlib import redirect_stdout
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, urljoin
 
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import MessageNotModified, FloodWait
 from flask import Flask
 from curl_cffi import requests as currequests
+from bs4 import BeautifulSoup
 
 from HindiAnimeZone import HindiAnimeZone
-from RareAnimes import RareAnimes
 
 # --- CONFIGURATION ---
 class Config:
@@ -33,7 +33,8 @@ class Config:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
     
-    DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    DEFAULT_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    MAX_FILE_SIZE = 2000 * 1024 * 1024 # 2GB for Telegram
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -45,6 +46,129 @@ logger = logging.getLogger("AnimeBot")
 logging.getLogger("pyrogram").setLevel(logging.WARNING)
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
+# --- PRO BYPASSER ENGINE ---
+class RareAnimes:
+    ROOT_URL = "https://codedew.com/"
+    MQ_BASE_URL = "https://swift.multiquality.click/"
+    UA = Config.DEFAULT_UA
+    
+    EP_REGEX = re.compile(r"(Episode\s*\d+|Ep\s*\d+|S\d+\s*E\d+|Movie|Special|OVA)", re.I)
+
+    def __init__(self):
+        self.session = currequests.Session(impersonate="chrome124")
+        self.session.headers.update({
+            "User-Agent": self.UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Sec-CH-UA": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+            "Sec-CH-UA-Mobile": "?0",
+            "Sec-CH-UA-Platform": '"Linux"'
+        })
+        self.last_mq_referer = None
+
+    def get_links(self, url: str, ep_start: Optional[int] = None, ep_end: Optional[int] = None) -> Dict[str, Any]:
+        try:
+            # Warmup
+            self.session.get("https://rareanimes.app/", timeout=15)
+            resp = self.session.get(url, timeout=20)
+            if resp.status_code != 200: return {"error": f"Page Status {resp.status_code}", "episodes": []}
+                
+            soup = BeautifulSoup(resp.text, "html.parser")
+            series_info = self._scrape_series_metadata(soup, url)
+            raw_eps = self._extract_episodes(resp.text, url)
+            
+            selected_eps = self._filter_episodes(raw_eps, ep_start, ep_end)
+            results = []
+            for ep in selected_eps:
+                links = self._try_mirrors(ep["mirrors"])
+                results.append({
+                    "episode": ep["label"],
+                    "downloads": links if links else [],
+                    "metadata": {"cookies": self.session.cookies.get_dict(), "user_agent": self.UA}
+                })
+            return {"episodes": results, "series_info": series_info}
+        except Exception as e:
+            return {"error": str(e), "episodes": []}
+
+    def _scrape_series_metadata(self, soup, url):
+        h1 = soup.find("h1")
+        return h1.text.strip() if h1 else url.split("/")[-1].replace("-", " ").title()
+
+    def _extract_episodes(self, html, referer):
+        soup = BeautifulSoup(html, "html.parser")
+        found = []
+        for a in soup.find_all("a", href=True):
+            if "codedew.com/zipper/" in a["href"]:
+                found.append({"label": self._get_label_from_tag(a), "mirrors": [{"url": a["href"], "referer": referer}]})
+        return found
+
+    def _get_label_from_tag(self, tag):
+        text = tag.get_text(" ", strip=True)
+        m = self.EP_REGEX.search(text)
+        return m.group(1).title() if m else "Episode"
+
+    def _filter_episodes(self, episodes, start, end):
+        def get_num(ep):
+            m = re.search(r'(\d+)', ep["label"])
+            return int(m.group(1)) if m else 0
+        filtered = [ep for ep in episodes if (not start or get_num(ep) >= start) and (not end or get_num(ep) <= end)]
+        return sorted(filtered, key=get_num)
+
+    def _try_mirrors(self, mirrors):
+        for mirror in mirrors:
+            links = self.process_zipper(mirror["url"], mirror["referer"])
+            if links: return links
+        return None
+
+    def process_zipper(self, url, referer):
+        try:
+            curr_url, curr_ref = url, referer
+            for _ in range(5):
+                resp = self.session.get(curr_url, headers={"Referer": curr_ref}, timeout=15)
+                token_match = re.search(r'name="rtiwatch"\s+value="([^"]+)"', resp.text)
+                if token_match and token_match.group(1) != "notranslate":
+                    return self.process_multiquality(f"{self.MQ_BASE_URL}downlead/{token_match.group(1)}/")
+                
+                soup = BeautifulSoup(resp.text, "html.parser")
+                btn = soup.select_one("a#goBtn, a#mainActionBtn, a.btn-main")
+                if not btn: break
+                curr_ref, curr_url = curr_url, urljoin(self.ROOT_URL, btn["href"])
+                time.sleep(0.5)
+        except: pass
+        return None
+
+    def process_multiquality(self, url):
+        try:
+            self.session.get(url, headers={"Referer": self.ROOT_URL}, timeout=15)
+            match = re.search(r"window\.juicyData\s*=\s*(\{.*?\});", self.session.get(url).text, re.S)
+            if not match: return None
+            jd = json.loads(match.group(1))["data"]
+            
+            time.sleep(3)
+            api_resp = self.session.post(
+                urljoin(self.MQ_BASE_URL, jd["routes"]["links"]),
+                headers={"Referer": url, "X-Requested-With": "XMLHttpRequest", "X-XSRF-TOKEN": unquote(self.session.cookies.get("XSRF-TOKEN", ""))},
+                json={"captcha": None, "_token": jd["token"]},
+                timeout=15
+            )
+            data = api_resp.json()
+            if data.get("success"):
+                return [{"label": q["label"], "link": q["link"], "metadata": {"referer": url, "cookies": self.session.cookies.get_dict(), "user_agent": self.UA}} for q in data["qualities"]]
+        except: pass
+        return None
+
+    def resolve_filename(self, url, referer=None, cookies=None):
+        if any(x in url.lower() for x in ["swift", "multiquality", "monster", "leech"]): return None
+        try:
+            with currequests.Session(impersonate="chrome124") as s:
+                if cookies: s.cookies.update(cookies)
+                res = s.head(url, headers={"Referer": referer or self.ROOT_URL, "User-Agent": self.UA}, allow_redirects=True, timeout=10)
+                cd = res.headers.get("Content-Disposition", "")
+                m = re.search(r'filename\*=utf-8\'\'(.+)|filename="(.+)"|filename=(.+)', cd, re.I)
+                if m: return unquote(m.group(1) or m.group(2) or m.group(3))
+                return os.path.basename(urlparse(res.url).path)
+        except: return None
+
 # --- UTILITIES ---
 class Utils:
     EDIT_STATES: Dict[int, Dict[str, Any]] = {}
@@ -53,420 +177,215 @@ class Utils:
     def human_bytes(size: float) -> str:
         if not size: return "0 B"
         for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-            if size < 1024.0:
-                return f"{size:.2f} {unit}"
+            if size < 1024.0: return f"{size:.2f} {unit}"
             size /= 1024.0
         return f"{size:.2f} PB"
 
     @staticmethod
-    def time_formatter(milliseconds: int) -> str:
-        seconds, milliseconds = divmod(int(milliseconds), 1000)
-        minutes, seconds = divmod(seconds, 60)
-        hours, minutes = divmod(minutes, 60)
-        days, hours = divmod(hours, 24)
-        tmp = ((f"{days}d, ") if days else "") + \
-              ((f"{hours}h, ") if hours else "") + \
-              ((f"{minutes}m, ") if minutes else "") + \
-              ((f"{seconds}s") if seconds else "0s")
-        return tmp if not tmp.endswith(", ") else tmp[:-2]
+    def time_formatter(ms: int) -> str:
+        s, ms = divmod(int(ms), 1000)
+        m, s = divmod(s, 60)
+        h, m = divmod(m, 60)
+        return (f"{h}h " if h else "") + (f"{m}m " if m else "") + f"{s}s"
 
     @classmethod
     async def safe_edit(cls, message: Message, text: str, force: bool = False, **kwargs):
         now = time.time()
-        mid = message.id
-        state = cls.EDIT_STATES.setdefault(mid, {"time": 0, "text": ""})
-        
-        if not force and (text == state["text"] or now - state["time"] < 3.0):
-            return
-
+        state = cls.EDIT_STATES.setdefault(message.id, {"time": 0, "text": ""})
+        if not force and (text == state["text"] or now - state["time"] < 3.0): return
         try:
             await message.edit(text, **kwargs)
             state.update({"time": now, "text": text})
-        except MessageNotModified:
-            state["text"] = text
+        except MessageNotModified: state["text"] = text
         except FloodWait as e:
             await asyncio.sleep(e.value)
             await cls.safe_edit(message, text, force=True, **kwargs)
-        except Exception as e:
-            logger.error(f"Edit failed: {e}")
+        except Exception: pass
 
 # --- CORE ENGINE ---
 class AnimeBot:
     def __init__(self):
         self.app = Client("anime_bot", Config.API_ID, Config.API_HASH, bot_token=Config.BOT_TOKEN)
         self._setup_handlers()
-        if not os.path.exists(Config.DOWNLOAD_DIR):
-            os.makedirs(Config.DOWNLOAD_DIR)
+        if not os.path.exists(Config.DOWNLOAD_DIR): os.makedirs(Config.DOWNLOAD_DIR)
 
     def _setup_handlers(self):
         @self.app.on_message(filters.command("start") & filters.incoming)
-        async def start_handler(client, message):
-            if not self._is_auth(message): return
-            await message.reply("✅ **Anime Bot Pro** is active.\nUsage: `/get <url> [selection]`")
+        async def start_handler(c, m): await m.reply("✅ **Anime Bot Pro** is active.\nUsage: `/get <url> [selection]`")
 
         @self.app.on_message(filters.command("get") & filters.incoming)
-        async def get_handler(client, message):
-            if not self._is_auth(message): return
-            if len(message.command) < 2:
-                return await message.reply("Usage: `/get <url> [selection]`")
-            
-            url = message.command[1]
-            selection = self._parse_selection(message.command[2:])
-            status = await message.reply("🔍 **Analyzing...**")
-            
+        async def get_handler(c, m):
+            if not self._is_auth(m): return
+            if len(m.command) < 2: return await m.reply("Usage: `/get <url> [selection]`")
+            url, selection = m.command[1], self._parse_selection(m.command[2:])
+            status = await m.reply("🔍 **Analyzing...**")
             try:
-                if "rareanimes.app" in url or "codedew.com" in url:
-                    await self._handle_rareanimes(message, url, selection, status)
-                elif "hindianimezone.com" in url:
-                    await self._handle_hindianime(message, url, selection, status)
-                else:
-                    await status.edit("❌ Unsupported site.")
-            except Exception as e:
-                logger.error(f"Cmd Error: {e}", exc_info=True)
-                await Utils.safe_edit(status, f"❌ Error: {str(e)}", force=True)
+                if "rareanimes.app" in url or "codedew.com" in url: await self._handle_rareanimes(m, url, selection, status)
+                elif "hindianimezone.com" in url: await self._handle_hindianime(m, url, selection, status)
+                else: await status.edit("❌ Unsupported site.")
+            except Exception as e: await Utils.safe_edit(status, f"❌ Error: {str(e)}", force=True)
 
-    def _is_auth(self, message: Message) -> bool:
-        uid = message.from_user.id if message.from_user else 0
-        cid = message.chat.id if message.chat else 0
-        return uid == Config.OWNER_ID or cid == Config.AUTH_CHAT
+    def _is_auth(self, m: Message) -> bool:
+        return (m.from_user.id if m.from_user else 0) == Config.OWNER_ID or m.chat.id == Config.AUTH_CHAT
 
     def _parse_selection(self, args: List[str]) -> Optional[List[int]]:
         if not args: return None
-        if len(args) == 2 and all(a.isdigit() for a in args):
-            s, e = map(int, args)
-            return list(range(min(s, e), max(s, e) + 1))
-        
-        sel_str = "".join(args)
-        indices = set()
-        for part in sel_str.split(','):
-            if '-' in part:
+        nums = set()
+        for a in "".join(args).split(','):
+            if '-' in a:
                 try:
-                    s, e = map(int, part.split('-'))
-                    indices.update(range(min(s, e), max(s, e) + 1))
+                    s, e = map(int, a.split('-'))
+                    nums.update(range(min(s, e), max(s, e) + 1))
                 except: continue
-            elif part.isdigit():
-                indices.add(int(part))
-        return sorted(list(indices)) if indices else None
+            elif a.isdigit(): nums.add(int(a))
+        return sorted(list(nums)) if nums else None
 
-    async def _handle_rareanimes(self, message: Message, url: str, selection: Optional[List[int]], status: Message):
-        ep_start = min(selection) if selection else None
-        ep_end = max(selection) if selection else None
-        
-        bypasser = RareAnimes()
-        res = await asyncio.to_thread(bypasser.get_links, url, ep_start, ep_end)
-        
-        if "error" in res:
-            return await Utils.safe_edit(status, f"❌ Error: {res['error']}", force=True)
-            
-        episodes = res.get("episodes", [])
-        if not episodes:
-            return await Utils.safe_edit(status, "❌ No episodes found.", force=True)
-            
-        await Utils.safe_edit(status, f"✅ Found {len(episodes)} episodes. Starting batch processing...")
-        
-        for i, ep in enumerate(episodes, 1):
-            await self._process_episode(message, ep, status, len(episodes), i, res.get("series_info"))
-        
+    async def _handle_rareanimes(self, m, url, selection, status):
+        res = await asyncio.to_thread(RareAnimes().get_links, url, min(selection) if selection else None, max(selection) if selection else None)
+        if "error" in res: return await Utils.safe_edit(status, f"❌ {res['error']}", force=True)
+        eps = res.get("episodes", [])
+        if not eps: return await Utils.safe_edit(status, "❌ No episodes found.", force=True)
+        for i, ep in enumerate(eps, 1):
+            await self._process_episode(m, ep, status, len(eps), i, res.get("series_info"))
         await status.delete()
 
-    async def _handle_hindianime(self, message: Message, url: str, selection: Optional[List[int]], status: Message):
-        bypasser = HindiAnimeZone()
-        episodes = await asyncio.to_thread(bypasser.pro_main_bypass, url, selection=selection)
-        
-        if not episodes:
-            return await Utils.safe_edit(status, "❌ No episodes found.", force=True)
-            
-        await Utils.safe_edit(status, f"✅ Found {len(episodes)} episodes. Starting batch processing...")
-        
-        for i, ep in enumerate(episodes, 1):
-            await self._process_episode(message, ep, status, len(episodes), i, ep.get("series_info"))
-        
+    async def _handle_hindianime(self, m, url, selection, status):
+        eps = await asyncio.to_thread(HindiAnimeZone().pro_main_bypass, url, selection=selection)
+        if not eps: return await Utils.safe_edit(status, "❌ No episodes found.", force=True)
+        for i, ep in enumerate(eps, 1):
+            await self._process_episode(m, ep, status, len(eps), i, ep.get("series_info"))
         await status.delete()
 
-    async def _process_episode(self, message: Message, ep_data: Dict, status: Message, total: int, current: int, series_info: Optional[str]):
-        downloads = sorted(ep_data.get("downloads", []), key=lambda x: self._q_val(x.get('label')))
+    async def _process_episode(self, m, ep, status, total, current, series_info):
+        downloads = sorted(ep.get("downloads", []), key=lambda x: self._q_val(x.get('label')))
         if not downloads: return
-
-        req_dir = os.path.join(Config.DOWNLOAD_DIR, str(message.id))
+        req_dir = os.path.join(Config.DOWNLOAD_DIR, str(m.id))
         if not os.path.exists(req_dir): os.makedirs(req_dir)
 
         for dl in downloads:
-            url = dl['link']
-            meta = dl.get('metadata', {})
-            label = dl.get('label', 'N/A')
-            
-            # Resolve filename
+            url, meta, label = dl['link'], dl.get('metadata', {}), dl.get('label', 'N/A')
             await Utils.safe_edit(status, f"🔍 **Resolving {label}...**", force=True)
-            rare = RareAnimes()
-            fname = await asyncio.to_thread(rare.resolve_filename, url, meta.get('referer'), meta.get('cookies'))
+            fname = await asyncio.to_thread(RareAnimes().resolve_filename, url, meta.get('referer'), meta.get('cookies'))
             
-            if fname:
-                fname = re.sub(r'[\\/*?:"<>|]', "", fname).strip()
-            
-            if not fname or fname.startswith("download_") or len(fname) < 5:
-                # Smart reconstruction based on page info and metadata
-                # Pattern: [Anime Name] - [Episode] [Quality].mp4
-                clean_series = self._clean_noise(series_info or "Anime")
-                # Extract number from ep_data['episode'] or current index
-                ep_num = re.search(r'(\d+)', ep_data.get('episode', ''))
+            if not fname or len(fname) < 5:
+                ep_num = re.search(r'(\d+)', ep.get('episode', ''))
                 ep_str = f"E{ep_num.group(1).zfill(2)}" if ep_num else f"E{str(current).zfill(2)}"
-                
-                clean_label = label.upper().replace(" ", "")
-                fname = f"{clean_series} - {ep_str} [{clean_label}].mp4"
-                logger.info(f"[*] Smart Reconstruction: {fname}")
-                
-            fpath = os.path.join(req_dir, fname)
+                fname = f"{self._clean_noise(series_info or 'Anime')} - {ep_str} [{label.upper()}].mp4"
             
-            # Download
-            logger.info(f"[*] Starting download: {fname}")
+            fpath = os.path.join(req_dir, re.sub(r'[\\/*?:"<>|]', "", fname).strip())
             await Utils.safe_edit(status, f"🚀 **Downloading {label}**...", force=True)
-            success = await self._download_manager(url, fpath, status, meta)
-            if not success:
-                logger.error(f"[!] Download failed for: {fname}")
-                await Utils.safe_edit(status, f"❌ **Download Failed** [{label}]", force=True)
-                continue
-            
-            # Metadata & Upload
-            logger.info(f"[*] Extracting meta for: {fname}")
-            await Utils.safe_edit(status, f"⚙️ **Processing Meta {current}/{total}...**", force=True)
-            w, h, dur = await self._get_video_meta(fpath)
-            thumb = await self._make_thumb(fpath, dur)
-            cap = self._make_caption(fpath, os.path.getsize(fpath), dur, series_info)
-            
-            start_t = time.time()
-            try:
-                await self.app.send_video(
-                    chat_id=message.chat.id,
-                    video=fpath,
-                    caption=cap,
-                    duration=dur, width=w, height=h,
-                    thumb=thumb,
-                    progress=self._upload_progress,
-                    progress_args=(f"📤 **Uploading {current}/{total} [{label}]**", status, start_t)
-                )
-            except Exception as e:
-                logger.error(f"Upload fail: {e}")
-            
-            # Cleanup per quality
+            if await self._download_manager(url, fpath, status, meta):
+                # Split if necessary
+                paths = await self._split_video(fpath)
+                for p in paths:
+                    await self._upload_file(m, p, status, current, total, label, series_info)
+                    if os.path.exists(p): os.remove(p)
             if os.path.exists(fpath): os.remove(fpath)
-            if thumb and os.path.exists(thumb): os.remove(thumb)
-            
-        # Cleanup dir
-        if os.path.exists(req_dir) and not os.listdir(req_dir):
-            shutil.rmtree(req_dir)
 
-    async def _download_manager(self, url: str, path: str, status: Message, meta: Dict) -> bool:
+    async def _download_manager(self, url, path, status, meta):
+        ua, cookies = meta.get('user_agent', Config.DEFAULT_UA), meta.get('cookies', {})
+        is_sensitive = any(x in url.lower() for x in ["monster", "swift", "multiquality", "downlead"])
+        if is_sensitive: await self._warmup_mirror(f"https://{urlparse(url).netloc}/", ua, cookies)
+        
+        conn = "1" if is_sensitive else "16"
+        cmd = ["aria2c", "-x", conn, "-s", conn, "--out", path, "--user-agent", ua, "--check-certificate=false",
+               "--header", "Sec-CH-UA-Platform: \"Linux\"", "--header", "Sec-CH-UA: \"Chromium\";v=\"124\"", url]
+        if meta.get('referer'): cmd.extend(["--referer", meta['referer']])
+        if cookies: cmd.extend(["--header", f"Cookie: {'; '.join([f'{k}={v}' for k, v in cookies.items()])}"])
+        
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        while True:
+            line = await proc.stdout.readline()
+            if not line: break
+            m = re.search(r'\((\d+)%\).*?SPD:([\d\.]+[KMG]i?B)', line.decode('utf-8', 'ignore'))
+            if m: await Utils.safe_edit(status, f"🚀 **Downloading** [{m.group(1)}%]\n**Speed**: {m.group(2)}/s")
+        await proc.wait()
+        return proc.returncode == 0 and os.path.exists(path)
+
+    async def _upload_file(self, m, fpath, status, current, total, label, series_info):
+        w, h, dur = await self._get_video_meta(fpath)
+        thumb = await self._make_thumb(fpath, dur)
+        cap = self._make_caption(fpath, os.path.getsize(fpath), dur, series_info)
+        start = time.time()
         try:
-            # Sync session with bypasser for maximum compatibility
-            referer = meta.get('referer', '')
-            ua = meta.get('user_agent', Config.DEFAULT_UA)
-            cookies = meta.get('cookies', {})
-            
-            # Mirror Warmup: Established session cookies for generative mirrors
-            is_sensitive = any(x in url.lower() for x in ["monster", "swift", "multiquality", "downlead", "generate", "leech"])
-            if is_sensitive:
-                domain = urlparse(url).netloc
-                logger.info(f"[*] Mirror Warmup for: {domain}")
-                await self._warmup_mirror(f"https://{domain}/", ua, cookies)
-            
-            # Strategy: Single-connection for sensitive/tokenized mirrors to avoid consumption
-            # Multi-connection often triggers 403 on one-time download links.
-            conn_count = "1" if is_sensitive else "16"
-            
-            cmd = [
-                "aria2c", "-x", conn_count, "-s", conn_count, "-k", "1M",
-                "--out", path, "--file-allocation=none", "--continue=true",
-                "--user-agent", ua,
-                "--header", "Accept: */*",
-                "--header", "Accept-Language: en-US,en;q=0.9",
-                "--header", "Connection: keep-alive",
-                "--header", "Upgrade-Insecure-Requests: 1",
-                "--header", "Sec-Fetch-Dest: document",
-                "--header", "Sec-Fetch-Mode: navigate",
-                "--header", "Sec-Fetch-Site: cross-site",
-                url
-            ]
-            if referer: cmd.extend(["--referer", referer])
-            if cookies:
-                c_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
-                cmd.extend(["--header", f"Cookie: {c_str}"])
+            await self.app.send_video(m.chat.id, fpath, caption=cap, duration=dur, width=w, height=h, thumb=thumb,
+                                    progress=self._upload_progress, progress_args=(f"📤 **Uploading {current}/{total}**", status, start))
+        except Exception as e: logger.error(f"Upload fail: {e}")
+        if thumb and os.path.exists(thumb): os.remove(thumb)
 
-            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-            
-            while True:
-                line = await proc.stdout.readline()
-                if not line: break
-                line = line.decode('utf-8', 'ignore').strip()
-                match = re.search(r'\((\d+)%\).*?SPD:([\d\.]+[KMG]i?B).*?ETA:([\d\w]+)', line)
-                if match:
-                    p, s, e = match.groups()
-                    bar = "█" * (int(p)//10) + "░" * (10 - int(p)//10)
-                    await Utils.safe_edit(status, f"🚀 **Downloading** [{p}%]\n`{bar}`\n**Speed**: {s}/s | **ETA**: {e}")
-            
+    async def _split_video(self, path):
+        size = os.path.getsize(path)
+        if size <= Config.MAX_FILE_SIZE: return [path]
+        
+        logger.info(f"[*] Splitting {path}...")
+        duration = (await self._get_video_meta(path))[2]
+        parts = math.ceil(size / Config.MAX_FILE_SIZE)
+        part_dur = duration / parts
+        split_files = []
+        for i in range(parts):
+            out = f"{path}.part{i+1}.mp4"
+            cmd = ["ffmpeg", "-i", path, "-ss", str(i*part_dur), "-t", str(part_dur), "-c", "copy", out, "-y"]
+            proc = await asyncio.create_subprocess_exec(*cmd)
             await proc.wait()
-            if proc.returncode == 0 and os.path.exists(path): return True
-        except Exception as e:
-            logger.warning(f"Aria2c fail: {e}")
+            if os.path.exists(out): split_files.append(out)
+        return split_files
 
-        try:
-            # Sync session with bypasser for maximum compatibility
-            with currequests.Session(impersonate="chrome124") as s:
-                if cookies: s.cookies.update(cookies)
-                logger.info(f"[*] Fallback download starting (Chrome 124): {url[:60]}...")
-                
-                # Professional headers synced with working debug Strategy A
-                headers = {
-                    "Referer": meta.get('referer', ''),
-                    "Accept": "*/*",
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Connection": "keep-alive",
-                    "Upgrade-Insecure-Requests": "1",
-                    "Sec-Fetch-Dest": "document",
-                    "Sec-Fetch-Mode": "navigate",
-                    "Sec-Fetch-Site": "cross-site",
-                }
-                # Inject XSRF token if found in cookies (common for Laravel MQ API)
-                xsrf_token = s.cookies.get("XSRF-TOKEN")
-                if xsrf_token: headers["X-XSRF-TOKEN"] = unquote(xsrf_token)
+    def _make_caption(self, path, size, dur, series_info):
+        info = self._parse_filename(os.path.basename(path))
+        name = self._clean_noise(series_info or info['name'])
+        q = re.search(r'(\d{3,4}p)', path, re.I)
+        q_str = q.group(1).upper() if q else "720P"
+        return f"🎬 **{name}**\n╭━━━━━━━━━━━━━━━━━━━╮\n│ 📺 **Episode:** {info['episode'] or 'N/A'}\n│ 🌐 **Language:** Hindi\n│ 📊 **Quality:** {q_str}\n│ 📦 **Size:** {Utils.human_bytes(size)}\n│ ⏱️ **Duration:** {Utils.time_formatter(dur*1000)}\n╰━━━━━━━━━━━━━━━━━━━╯"
 
-                r = s.get(url, stream=True, headers=headers, timeout=60, allow_redirects=True)
-                
-                if r.status_code != 200:
-                    logger.error(f"[*] Fallback failed (Status {r.status_code}). Body: {r.text[:300]}...")
-                    return False
-                    
-                total_size = int(r.headers.get('content-length', 0))
-                downloaded = 0
-                last_update = 0
-                
-                with open(path, 'wb') as f:
-                    for chunk in r.iter_content(1024*1024):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            # Progress update every 5MB or 3s
-                            if total_size and time.time() - last_update > 3:
-                                p = int(downloaded * 100 / total_size)
-                                bar = "█" * (p//10) + "░" * (10 - p//10)
-                                await Utils.safe_edit(status, f"🚀 **Downloading (Fallback)** [{p}%]\n`{bar}`")
-                                last_update = time.time()
-                return os.path.exists(path)
-        except Exception as e:
-            logger.error(f"[*] Fallback error: {e}")
-            return False
-
-    def _make_caption(self, path: str, size: int, dur: int, series_info: Optional[str]) -> str:
-        basename = os.path.basename(path)
-        info = self._parse_filename(basename)
-        
-        series_name = None
-        if series_info:
-            # If it's already a clean Full Name from the scraper, use it as is
-            # but try to remove common noise just in case.
-            # Only split if it looks like a typical messy page title (has | or - and is long)
-            if ("|" in series_info or "-" in series_info) and len(series_info) > 30:
-                series_name_dirty = series_info.split("|")[0].split("-")[0].strip()
-            else:
-                series_name_dirty = series_info.strip()
-            
-            series_name = self._clean_noise(self._parse_filename(series_name_dirty)['name'])
-            
-        fname_clean = self._clean_noise(info['name'])
-        
-        if series_name and (len(series_name) > len(fname_clean) or fname_clean in ["Unknown", "Download"]):
-            display_name = series_name
-        else:
-            display_name = fname_clean or series_name or "Unknown Anime"
-            
-        if len(display_name) < 4 or display_name.isdigit():
-            display_name = series_name or display_name
-            
-        display_name = self._clean_noise(display_name)
-        
-        quality = re.search(r'(\d{3,4}p)', basename, re.I)
-        q_str = quality.group(1).upper() if quality else "720P"
-        
-        cap = f"🎬 **{display_name}**"
-        if info['year']: cap += f" ({info['year']})"
-        cap += "\n╭━━━━━━━━━━━━━━━━━━━╮"
-        if info['season']: cap += f"\n│ ✨ **season :** {info['season']}"
-        cap += f"\n│ 📺 **Episode:** {info['episode'] or 'N/A'}"
-        cap += f"\n│ 🌐 **Language:** Hindi\n│ 📊 **Quality:** {q_str}\n│ 📦 **Size:** {Utils.human_bytes(size)}\n│ ⏱️ **Duration:** {Utils.time_formatter(dur*1000)}\n╰━━━━━━━━━━━━━━━━━━━╯"
-        return cap
-
-    async def _warmup_mirror(self, url: str, ua: str, cookies: Dict):
-        """Visits the mirror root to establish session context/cookies."""
-        try:
-            headers = {"User-Agent": ua, "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
-            with currequests.Session(impersonate="chrome124") as s:
-                if cookies: s.cookies.update(cookies)
-                s.get(url, headers=headers, timeout=10)
-                # Update original cookies dict with any new mirror cookies
-                cookies.update(s.cookies.get_dict())
-        except Exception as e:
-            logger.debug(f"Warmup fail: {e}")
-
-    def _parse_filename(self, text: str) -> Dict:
-        data = {"name": "Unknown", "season": None, "episode": None, "year": None, "is_movie": False}
-        yr = re.search(r'\(?(19|20)\d{2}\)?', text)
+    def _parse_filename(self, text):
+        data = {"name": "Unknown", "season": None, "episode": None, "year": None}
+        yr = re.search(r'\((19|20)\d{2}\)', text)
         if yr: data["year"] = yr.group(0).strip('()')
-        s = re.search(r'Season\s*(\d+)|S(\d+)', text, re.I)
-        if s: data["season"] = (s.group(1) or s.group(2)).zfill(2)
-        e = re.search(r'E(\d+)|Episode\s*(\d+)|Ep[\.\s]*(\d+)', text, re.I)
-        if e: data["episode"] = (e.group(1) or e.group(2) or e.group(3)).zfill(2)
-        
-        name = re.sub(r'\.(mp4|mkv|avi|webm)$', '', text, flags=re.I)
-        for p in [r'S\d+|Season\s*\d+', r'E\d+|Episode\s*\d+|Ep[\.\s]*\d+', r'\d{3,4}p', r'\(?(19|20)\d{2}\)?']:
-            name = re.sub(p, '', name, flags=re.I)
-        data["name"] = self._clean_noise(name)
+        e = re.search(r'E(\d+)|Episode\s*(\d+)', text, re.I)
+        if e: data["episode"] = (e.group(1) or e.group(2)).zfill(2)
+        data["name"] = self._clean_noise(re.sub(r'\(.*?\)|\[.*?\]', '', text.split('.')[0]))
         return data
 
-    def _clean_noise(self, text: str) -> str:
-        if not text: return ""
-        noise = r'Dubbed|Hindi|Dual|Audio|Multi|UNCUT|Eng|Sub|Soft|Hard|ESub|HSub|SD|HD|FHD|4K|Ultra|Web-DL|BluRay|x264|x265|HEVC|Episodes?|Downloads?|Full|Series|Zon-E'
-        text = re.sub(noise, '', text, flags=re.I)
-        text = re.sub(r'[@\[\(].*?[\]\)]|www\.\S+', '', text)
-        text = re.sub(r'[\_\.\-]+', ' ', text)
-        return re.sub(r'\s+', ' ', text).strip()
+    def _clean_noise(self, text):
+        noise = r'Dubbed|Hindi|Dual|Audio|Multi|Episodes?|Downloads?|Full|Series|Zon-E'
+        return re.sub(r'\s+', ' ', re.sub(noise, '', text, flags=re.I).replace('.', ' ').replace('_', ' ')).strip()
 
-    def _q_val(self, label: Any) -> int:
+    def _q_val(self, label):
         m = re.search(r'(\d+)', str(label))
         return int(m.group(1)) if m else 0
 
-    async def _get_video_meta(self, path: str) -> Tuple[int, int, int]:
+    async def _get_video_meta(self, path):
         try:
             cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,duration", "-of", "json", path]
-            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            out, _ = await proc.communicate()
-            d = json.loads(out)["streams"][0]
+            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE)
+            d = json.loads((await proc.communicate())[0])["streams"][0]
             return int(d.get("width", 0)), int(d.get("height", 0)), int(float(d.get("duration", 0)))
         except: return 0, 0, 0
 
-    async def _make_thumb(self, path: str, dur: int) -> Optional[str]:
-        t_path = f"{path}.jpg"
-        try:
-            cmd = ["ffmpeg", "-v", "error", "-ss", str(dur//5), "-i", path, "-vframes", "1", "-q:v", "2", t_path, "-y"]
-            proc = await asyncio.create_subprocess_exec(*cmd)
-            await proc.wait()
-            return t_path if os.path.exists(t_path) else None
-        except: return None
+    async def _make_thumb(self, path, dur):
+        t = f"{path}.jpg"
+        cmd = ["ffmpeg", "-ss", str(dur//5), "-i", path, "-vframes", "1", "-q:v", "2", t, "-y"]
+        await (await asyncio.create_subprocess_exec(*cmd, stderr=asyncio.subprocess.DEVNULL)).wait()
+        return t if os.path.exists(t) else None
 
-    async def _upload_progress(self, current, total, ud_type, message, start):
-        perc = current * 100 / total if total else 0
-        bar = "█" * (int(perc)//10) + "░" * (10 - int(perc)//10)
-        tmp = f"{ud_type}\n[{perc:.2f}%] `{bar}`\n**Speed**: {Utils.human_bytes(current/(time.time()-start))}/s"
-        await Utils.safe_edit(message, tmp)
+    async def _upload_progress(self, cur, tot, ud, msg, start):
+        p = cur*100/tot if tot else 0
+        if time.time() - getattr(self, '_last_up', 0) > 4:
+            await Utils.safe_edit(msg, f"{ud}\n[{p:.1f}%] `{'█'*(int(p)//10)}`")
+            self._last_up = time.time()
+
+    async def _warmup_mirror(self, url, ua, cookies):
+        try:
+            with currequests.Session(impersonate="chrome124") as s:
+                if cookies: s.cookies.update(cookies)
+                s.get(url, headers={"User-Agent": ua}, timeout=10)
+                cookies.update(s.cookies.get_dict())
+        except: pass
 
     def run(self):
         print("🚀 AnimeBot Pro Starting...")
-        Thread(target=self._run_health_check, daemon=True).start()
+        Thread(target=lambda: Flask(__name__).run(host='0.0.0.0', port=int(os.environ.get("PORT", 8000)), debug=False), daemon=True).start()
         self.app.run()
-
-    def _run_health_check(self):
-        flask_app = Flask(__name__)
-        @flask_app.route('/')
-        def home(): return "AnimeBot Pro is Live", 200
-        flask_app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8000)))
 
 if __name__ == "__main__":
     AnimeBot().run()
