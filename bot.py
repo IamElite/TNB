@@ -346,16 +346,17 @@ class RareAnimes:
                     if data.get("success"):
                         qualities = data.get("qualities", [])
                         if not qualities:
-                            logger.warning("[!] Success but 0 qualities. Retrying...")
+                            logger.warning(f"[!] Success but 0 qualities (Attempt {attempt}). Body: {resp_text[:100]}")
                             time.sleep(2 * attempt)
                             continue
-                            
+                        
+                        logger.info(f"[+] MQ Success: Found {len(qualities)} qualities!")
                         return [{
                             "label": q["label"], "link": q["link"],
                             "metadata": {"referer": url, "cookies": self.session.cookies.get_dict(), "user_agent": self.UA}
                         } for q in qualities]
                     else:
-                        logger.warning(f"[!] MQ API Logic Error: {data.get('message', 'No message')}")
+                        logger.warning(f"[!] MQ API Logic Error (Attempt {attempt}): {data.get('message', 'No message')}")
                         time.sleep(2 * attempt)
                 except Exception as e:
                     logger.error(f"[!] MQ Attempt {attempt} error: {e}")
@@ -367,7 +368,7 @@ class RareAnimes:
         return None
 
     def resolve_filename(self, url: str, referer: Optional[str] = None, cookies: Optional[Dict] = None) -> Optional[str]:
-        if any(x in url.lower() for x in ["swift", "multiquality", "monster", "leech"]): return None
+        if any(x in url.lower() for x in ["swift", "multiquality", "leech"]): return None
         try:
             with currequests.Session(impersonate="chrome124") as s:
                 if cookies: s.cookies.update(cookies)
@@ -466,6 +467,7 @@ class AnimeBot:
         await Utils.safe_edit(status, f"✅ Found {len(episodes)} episodes. Starting batch processing...")
         
         for i, ep in enumerate(episodes, 1):
+            logger.info(f"[*] Dispatching Episode {i}/{len(episodes)}: {ep.get('episode')}")
             await self._process_episode(m, ep, status, len(episodes), i, res.get("series_info"))
         
         await status.delete()
@@ -479,7 +481,9 @@ class AnimeBot:
 
     async def _process_episode(self, m, ep, status, total, current, series_info):
         downloads = sorted(ep.get("downloads", []), key=lambda x: self._q_val(x.get('label')))
-        if not downloads: return
+        if not downloads:
+            logger.warning(f"[!] No valid download links for episode: {ep.get('episode')}. Skipping.")
+            return
         req_dir = os.path.join(Config.DOWNLOAD_DIR, str(m.id))
         if not os.path.exists(req_dir): os.makedirs(req_dir)
 
