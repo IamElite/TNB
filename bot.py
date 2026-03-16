@@ -479,39 +479,52 @@ class AnimeBot:
     async def _handle_hindianime(self, m, url, selection, status):
         eps = await asyncio.to_thread(HindiAnimeZone().pro_main_bypass, url, selection=selection)
         if not eps: return await Utils.safe_edit(status, "❌ No episodes found.", force=True)
+        # Create a dummy bypasser for consistency if needed, though HindiAnimeZone handles its own session
+        bypasser = RareAnimes() 
         for i, ep in enumerate(eps, 1):
-            await self._process_episode(m, ep, status, len(eps), i, ep.get("series_info"))
+            await self._process_episode(m, ep, bypasser, status, len(eps), i, ep.get("series_info"))
         await status.delete()
 
     async def _process_episode(self, m, ep, bypasser, status, total, current, series_info):
-        downloads = sorted(ep.get("downloads", []), key=lambda x: self._q_val(x.get('label')))
-        logger.info(f"[*] Episode {current}/{total} has {len(downloads)} download links.")
-        if not downloads:
-            logger.warning(f"[!] No valid download links for episode: {ep.get('episode') or 'Unknown'}. Skipping.")
-            return
-        req_dir = os.path.join(Config.DOWNLOAD_DIR, str(m.id))
-        if not os.path.exists(req_dir): os.makedirs(req_dir)
+        try:
+            downloads = sorted(ep.get("downloads", []), key=lambda x: self._q_val(x.get('label')))
+            logger.info(f"[*] Episode {current}/{total} has {len(downloads)} download links.")
+            if not downloads:
+                logger.warning(f"[!] No valid download links for episode: {ep.get('episode') or 'Unknown'}. Skipping.")
+                return
+            req_dir = os.path.join(Config.DOWNLOAD_DIR, str(m.id))
+            if not os.path.exists(req_dir): os.makedirs(req_dir)
 
-        for dl in downloads:
-            url, meta, label = dl['link'], dl.get('metadata', {}), dl.get('label', 'N/A')
-            await Utils.safe_edit(status, f"🔍 **Resolving {label}...**", force=True)
-            logger.info(f"[*] Resolving filename for {label}: {url[:60]}...")
-            fname = await asyncio.to_thread(bypasser.resolve_filename, url, meta.get('referer'), meta.get('cookies'))
-            
-            if not fname or len(fname) < 5:
-                ep_num = re.search(r'(\d+)', ep.get('episode', ''))
-                ep_str = f"E{ep_num.group(1).zfill(2)}" if ep_num else f"E{str(current).zfill(2)}"
-                fname = f"{self._clean_noise(series_info or 'Anime')} - {ep_str} [{label.upper()}].mp4"
-            
-            fpath = os.path.join(req_dir, re.sub(r'[\\/*?:"<>|]', "", fname).strip())
-            await Utils.safe_edit(status, f"🚀 **Downloading {label}**...", force=True)
-            if await self._download_manager(url, fpath, status, meta):
-                # Split if necessary
-                paths = await self._split_video(fpath)
-                for p in paths:
-                    await self._upload_file(m, p, status, current, total, label, series_info)
-                    if os.path.exists(p): os.remove(p)
-            if os.path.exists(fpath): os.remove(fpath)
+            for dl in downloads:
+                url, meta, label = dl['link'], dl.get('metadata', {}), dl.get('label', 'N/A')
+                logger.info(f"[*] Processing Quality: {label} | URL: {url[:60]}...")
+                
+                await Utils.safe_edit(status, f"🔍 **Resolving {label}...**", force=True)
+                fname = await asyncio.to_thread(bypasser.resolve_filename, url, meta.get('referer'), meta.get('cookies'))
+                
+                if not fname or len(fname) < 5:
+                    ep_num = re.search(r'(\d+)', ep.get('episode', ''))
+                    ep_str = f"E{ep_num.group(1).zfill(2)}" if ep_num else f"E{str(current).zfill(2)}"
+                    fname = f"{self._clean_noise(series_info or 'Anime')} - {ep_str} [{label.upper()}].mp4"
+                
+                fpath = os.path.join(req_dir, re.sub(r'[\\/*?:"<>|]', "", fname).strip())
+                logger.info(f"[*] Target File: {fpath}")
+                
+                await Utils.safe_edit(status, f"🚀 **Downloading {label}**...", force=True)
+                if await self._download_manager(url, fpath, status, meta):
+                    # Split if necessary
+                    paths = await self._split_video(fpath)
+                    for p in paths:
+                        await self._upload_file(m, p, status, current, total, label, series_info)
+                        if os.path.exists(p): os.remove(p)
+                else:
+                    logger.error(f"[!] Download failed for {label}")
+                
+                if os.path.exists(fpath): os.remove(fpath)
+        except Exception as e:
+            logger.error(f"[CRITICAL] Crash in _process_episode: {e}")
+            logger.error(traceback.format_exc())
+            await Utils.safe_edit(status, f"❌ Error processing episode: {str(e)}", force=True)
 
     async def _download_manager(self, url, path, status, meta):
         ua, cookies = meta.get('user_agent', Config.DEFAULT_UA), meta.get('cookies', {})
