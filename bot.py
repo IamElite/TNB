@@ -514,7 +514,7 @@ class Utils:
         return Utils.time_formatter(remaining * 1000)
 
     @staticmethod
-    def format_progress(filename, status_icon, status_text, p, speed, curr_size, tot_size, start_time):
+    def format_progress(filename, status_icon, status_text, p, speed, curr_size, tot_size, start_time, ep_status=None):
         cpu, ram, net_mbps, net_mib = Utils.get_system_stats()
         eta = Utils.get_eta(curr_size, tot_size, speed)
         bar = Utils.progress_bar(p, l=10)
@@ -526,6 +526,8 @@ class Utils:
         
         # Box drawing UI
         res = f"🚀 `{filename}`\n\n"
+        if ep_status:
+            res += f"{ep_status}\n"
         res += f"┌ Status  : {status_icon} **{status_text}** {status_icon}\n"
         res += f"├ {bar} **{p:.1f}%**\n"
         res += f"├ ⚡ **Speed**   : `{spd_str}`\n"
@@ -643,6 +645,18 @@ class AnimeBot:
             await self._process_episode(m, ep, bypasser, status, len(eps), i, ep.get("series_info"))
         await status.delete()
 
+    def _render_ep_status(self, ep_label, q_states):
+        res = f"━━━━━━━━━━━━━━━━━━━━\n"
+        res += f"🎬 **Episode**: `{ep_label}`\n"
+        for q, state in q_states.items():
+            icon = "✅" if state['status'] == 'Done' else "⏳" if state['status'] == 'Pending' else "🔄"
+            res += f"{icon} **{q}**: `{state['status']}`"
+            if state['progress'] > 0 and state['status'] not in ['Done', 'Pending']:
+                res += f" ({state['progress']}%)"
+            res += "\n"
+        res += f"━━━━━━━━━━━━━━━━━━━━\n"
+        return res
+
     async def _process_episode(self, m, ep, bypasser, status, total, current, series_info):
         try:
             downloads = sorted(ep.get("downloads", []), key=lambda x: self._q_val(x.get('label')))
@@ -650,52 +664,62 @@ class AnimeBot:
             if not downloads:
                 logger.warning(f"[!] No valid download links for episode: {ep.get('episode') or 'Unknown'}. Skipping.")
                 return
+
+            ep_label = ep.get('episode') or f"Ep {current}"
+            q_states = {dl.get('label', 'N/A'): {"status": "Pending", "progress": 0} for dl in downloads}
+            
             req_dir = os.path.join(Config.DOWNLOAD_DIR, str(m.id))
             if not os.path.exists(req_dir): os.makedirs(req_dir)
 
             for dl in downloads:
-                url, meta, label = dl['link'], dl.get('metadata', {}), dl.get('label', 'N/A')
-                logger.info(f"[*] Processing Quality: {label} | URL: {url[:60]}...")
+                label = dl.get('label', 'N/A')
+                url, meta = dl['link'], dl.get('metadata', {})
                 
-                await Utils.safe_edit(status, f"🔍 **Resolving {label}...**", force=True)
+                q_states[label]["status"] = "Resolving"
+                await Utils.safe_edit(status, self._render_ep_status(ep_label, q_states), force=True)
+                
                 fname = await asyncio.to_thread(bypasser.resolve_filename, url, meta.get('referer'), meta.get('cookies'))
-                
                 if not fname or len(fname) < 5:
-                    # Detect season for filename
                     s = re.search(r'S(\d+)|Season\s*(\d+)', series_info or "", re.I)
                     se_str = f"S{(s.group(1) or s.group(2)).zfill(2)}" if s else ""
-                    
-                    ep_num = re.search(r'(\d+)', ep.get('episode', ''))
+                    ep_num = re.search(r'(\d+)', ep_label)
                     ep_str = f"E{ep_num.group(1).zfill(2)}" if ep_num else f"E{str(current).zfill(2)}"
-                    
                     cleaned_name = self._clean_noise(series_info or 'Anime')
-                    # If se_str is already in cleaned_name, don't repeat
                     if se_str and (se_str in cleaned_name.upper() or f"SEASON {int(se_str[1:])}" in cleaned_name.upper()):
                         se_str = ""
-                        
                     fname = f"{cleaned_name} {se_str} {ep_str} [{label.upper()}].mp4"
                     fname = re.sub(r'\s+', ' ', fname).strip()
                 
                 fpath = os.path.join(req_dir, re.sub(r'[\\/*?:"<>|]', "", fname).strip())
-                logger.info(f"[*] Target File: {fpath}")
                 
-                await Utils.safe_edit(status, f"🚀 **Downloading {label}**...", force=True)
-                if await self._download_manager(url, fpath, status, meta):
-                    # Split if necessary
+                q_states[label]["status"] = "Downloading"
+                await Utils.safe_edit(status, self._render_ep_status(ep_label, q_states), force=True)
+                
+                if await self._download_manager(url, fpath, status, meta, label, q_states, ep_label):
                     paths = await self._split_video(fpath)
+                    q_states[label]["status"] = "Uploading"
                     for p in paths:
-                        await self._upload_file(m, p, status, current, total, label, series_info)
+                        await self._upload_file(m, p, status, current, total, label, series_info, q_states, ep_label)
                         if os.path.exists(p): os.remove(p)
+                    q_states[label]["status"] = "Done"
+                    q_states[label]["progress"] = 100
                 else:
+                    q_states[label]["status"] = "Failed"
                     logger.error(f"[!] Download failed for {label}")
                 
                 if os.path.exists(fpath): os.remove(fpath)
+                await Utils.safe_edit(status, self._render_ep_status(ep_label, q_states), force=True)
+
+        except Exception as e:
+            logger.error(f"[CRITICAL] Crash in _process_episode: {e}")
+            logger.error(traceback.format_exc())
+            await Utils.safe_edit(status, f"❌ Error processing episode: {str(e)}", force=True)
         except Exception as e:
             logger.error(f"[CRITICAL] Crash in _process_episode: {e}")
             logger.error(traceback.format_exc())
             await Utils.safe_edit(status, f"❌ Error processing episode: {str(e)}", force=True)
 
-    async def _download_manager(self, url, path, status, meta):
+    async def _download_manager(self, url, path, status, meta, label=None, q_states=None, ep_label=None):
         ua, cookies = meta.get('user_agent', Config.DEFAULT_UA), meta.get('cookies', {})
         referer = meta.get('referer', "https://swift.multiquality.click/")
         is_sensitive = any(x in url.lower() for x in ["monster", "swift", "multiquality", "downlead"])
@@ -725,25 +749,27 @@ class AnimeBot:
                 cmd.extend(["--header", f"{k}: {v}"])
         if cookies: cmd.extend(["--header", f"Cookie: {'; '.join([f'{k}={v}' for k, v in cookies.items()])}"])
         
-        logger.info(f"[*] Starting aria2c: {' '.join(cmd[:10])}...")
         try:
             proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
             while True:
                 line = await proc.stdout.readline()
                 if not line: break
                 line_str = line.decode('utf-8', 'ignore')
-                # Improved regex for aria2c: [#2089ad 4.0MiB/3.8GiB(0%) CN:1 SPD:6.2MiB/s ETA:10m31s]
                 m = re.search(r'([\d\.]+[KMG]i?B)/([\d\.]+[KMG]i?B)\((\d+)%\).*?SPD:([\d\.]+[KMG]i?B).*?ETA:([\w\d]+)', line_str)
                 if m:
                     curr_sz_str, tot_sz_str, p_str, spd_str, eta_str = m.groups()
                     p = int(p_str)
                     fname = os.path.basename(path)
                     
-                    # Compute system stats and net
+                    if q_states and label:
+                        q_states[label]["progress"] = p
+                    
+                    ep_status = self._render_ep_status(ep_label, q_states) if ep_label else None
+                    msg = Utils.format_progress(fname, "⏬", "Downloading", p, 0, 0, 0, 0, ep_status=ep_status)
+                    # Note: Speed/ETA details formatted from aria2c output directly
                     cpu, ram, net_mbps, net_mib = Utils.get_system_stats()
                     bar = Utils.progress_bar(p, l=10)
-                    
-                    msg = f"🚀 `{fname}`\n\n"
+                    msg = f"🚀 `{fname}`\n\n{ep_status if ep_status else ''}\n"
                     msg += f"┌ Status  : ⏬ **Downloading** ⏬\n"
                     msg += f"├ {bar} **{p}%**\n"
                     msg += f"├ ⚡ **Speed**   : `{spd_str}/s`\n"
@@ -757,28 +783,19 @@ class AnimeBot:
                     logger.error(f"[!] aria2c error: {line_str.strip()}")
             await proc.wait()
             
-            if proc.returncode == 0 and os.path.exists(path):
-                logger.info(f"[*] aria2c success: {path}")
-                return True
-            
+            if proc.returncode == 0 and os.path.exists(path): return True
             if proc.returncode == 22 or any(x in url.lower() for x in ["monster", "swift"]):
-                logger.warning(f"[!] aria2c failed (Code {proc.returncode}). Trying stable requests fallback...")
-                return await self._download_requests(url, path, status, headers, cookies)
-                
+                return await self._download_requests(url, path, status, headers, cookies, label, q_states, ep_label)
             return False
         except Exception as e:
-            logger.error(f"[!] aria2c start failed: {e}. Trying fallback...")
-            return await self._download_requests(url, path, status, headers, cookies)
+            return await self._download_requests(url, path, status, headers, cookies, label, q_states, ep_label)
 
-    async def _download_requests(self, url, path, status, headers, cookies):
+    async def _download_requests(self, url, path, status, headers, cookies, label=None, q_states=None, ep_label=None):
         try:
-            logger.info(f"[*] Starting chunked requests download: {url[:60]}...")
             with py_requests.get(url, headers=headers, cookies=cookies, stream=True, timeout=30, verify=False) as r:
                 r.raise_for_status()
                 total = int(r.headers.get('content-length', 0))
-                curr = 0
-                last_up = 0
-                start_t = time.time()
+                curr, last_up, start_t = 0, 0, time.time()
                 with open(path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=1 * 1024 * 1024):
                         if chunk:
@@ -786,19 +803,17 @@ class AnimeBot:
                             curr += len(chunk)
                             if time.time() - last_up > Config.PROGRESS_UPDATE_INTERVAL:
                                 p = curr * 100 / total if total else 0
-                                fname = os.path.basename(path)
+                                if q_states and label: q_states[label]["progress"] = int(p)
+                                ep_status = self._render_ep_status(ep_label, q_states) if ep_label else None
                                 speed = curr / (time.time() - start_t)
-                                
-                                # Advanced Box UI
-                                msg = Utils.format_progress(fname, "⏬", "Downloading (Fallback)", p, speed, curr, total, start_t)
+                                msg = Utils.format_progress(os.path.basename(path), "⏬", "Downloading (Fallback)", p, speed, curr, total, start_t, ep_status=ep_status)
                                 await Utils.safe_edit(status, msg)
                                 last_up = time.time()
             return os.path.exists(path) and os.path.getsize(path) > 1000
         except Exception as e:
-            logger.error(f"[!] Requests fallback failed: {e}")
             return False
 
-    async def _upload_file(self, m, fpath, status, current, total, label, series_info):
+    async def _upload_file(self, m, fpath, status, current, total, label, series_info, q_states=None, ep_label=None):
         w, h, dur = await self._get_video_meta(fpath)
         cap = self._make_caption(fpath, os.path.getsize(fpath), dur, series_info)
         start = time.time()
@@ -808,7 +823,7 @@ class AnimeBot:
             fname = os.path.basename(fpath)
             await self.app.send_video(m.chat.id, fpath, caption=cap, duration=dur, width=w, height=h, thumb=thumb,
                                     supports_streaming=True,
-                                    progress=self._upload_progress, progress_args=(f"**Uploading {current}/{total}**", status, start, fname))
+                                    progress=self._upload_progress, progress_args=(f"Uploading {label}", status, start, fname, label, q_states, ep_label))
         except Exception as e: logger.error(f"Upload fail: {e}")
         finally:
             if thumb and os.path.exists(thumb):
@@ -928,12 +943,13 @@ class AnimeBot:
             logger.error(f"Thumbnail error: {e}")
             return None
 
-    async def _upload_progress(self, cur, tot, ud, msg, start, fname):
+    async def _upload_progress(self, cur, tot, ud, msg, start, fname, label=None, q_states=None, ep_label=None):
         p = cur*100/tot if tot else 0
         if time.time() - getattr(self, '_last_up', 0) > Config.PROGRESS_UPDATE_INTERVAL:
+            if q_states and label: q_states[label]["progress"] = int(p)
+            ep_status = self._render_ep_status(ep_label, q_states) if ep_label else None
             speed = cur / (time.time() - start) if (time.time() - start) > 0 else 0
-            # Advanced Box UI
-            msg_text = Utils.format_progress(fname, "⏫", ud, p, speed, cur, tot, start)
+            msg_text = Utils.format_progress(fname, "⏫", ud, p, speed, cur, tot, start, ep_status=ep_status)
             await Utils.safe_edit(msg, msg_text)
             self._last_up = time.time()
 
