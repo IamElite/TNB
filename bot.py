@@ -281,14 +281,15 @@ class RareAnimes:
                     return None
                     
                 jd = json.loads(jd_str)["data"]
-                logger.info(f"[*] MQ JD Data Found: {jd.get('links', 'No link route')}")
+                # Detailed route logging
+                route = jd.get("routes", {}).get("links", "MISSING")
+                logger.info(f"[*] MQ Route: {route} | Token: {jd.get('token', 'MISSING')[:10]}...")
             except Exception as e:
                 logger.error(f"[!] JuicyData parse error: {e}")
                 return None
-            logger.info(f"[*] MQ Token found, waiting for links to generate...")
             
-            # Stable wait for server-side link generation
-            time.sleep(3.5)
+            # Link generation wait
+            time.sleep(4.0)
             
             api_url = urljoin(self.MQ_BASE_URL, jd["routes"]["links"])
             headers = {
@@ -298,27 +299,43 @@ class RareAnimes:
             }
             payload = {"captcha": None, "_token": jd["token"]}
             
-            api_resp = self.session.post(api_url, headers=headers, json=payload, timeout=15)
+            for attempt in range(1, 4):
+                try:
+                    logger.info(f"[*] Fetching links (Attempt {attempt}/3)...")
+                    api_resp = self.session.post(api_url, headers=headers, json=payload, timeout=20)
+                    
+                    if not api_resp.text:
+                        logger.warning(f"[!] Empty response from MQ API (Attempt {attempt})")
+                        time.sleep(2 * attempt)
+                        continue
+                    
+                    if api_resp.status_code != 200:
+                        logger.warning(f"[!] MQ API Status {api_resp.status_code} (Attempt {attempt})")
+                        time.sleep(2 * attempt)
+                        continue
+                        
+                    data = api_resp.json()
+                    if data.get("success"):
+                        qualities = data.get("qualities", [])
+                        if not qualities:
+                            logger.warning("[!] Success but 0 qualities. Retrying...")
+                            time.sleep(2 * attempt)
+                            continue
+                            
+                        return [{
+                            "label": q["label"], "link": q["link"],
+                            "metadata": {"referer": url, "cookies": self.session.cookies.get_dict(), "user_agent": self.UA}
+                        } for q in qualities]
+                    else:
+                        logger.warning(f"[!] MQ API Logic Error: {data.get('message', 'No message')}")
+                        time.sleep(2 * attempt)
+                except Exception as e:
+                    logger.error(f"[!] MQ Attempt {attempt} error: {e}")
+                    time.sleep(2 * attempt)
             
-            try:
-                data = api_resp.json()
-            except Exception as je:
-                logger.error(f"[!] MQ API JSON Decode Error: {je}")
-                return None
-            
-            if data.get("success"):
-                qualities = data.get("qualities", [])
-                if not qualities:
-                    logger.warning("[!] MQ API returned success but 0 qualities.")
-                    return []
-                return [{
-                    "label": q["label"], "link": q["link"],
-                    "metadata": {"referer": url, "cookies": self.session.cookies.get_dict(), "user_agent": self.UA}
-                } for q in qualities]
-            else:
-                logger.error(f"[!] MQ API failed: {data.get('message', 'No message')}")
+            logger.error("[!] Failed to get links after 3 attempts.")
         except Exception as e:
-            logger.error(f"[!] MQ processing error: {e}")
+            logger.error(f"[!] Critical error in process_multiquality: {e}")
         return None
 
     def resolve_filename(self, url: str, referer: Optional[str] = None, cookies: Optional[Dict] = None) -> Optional[str]:
