@@ -11,6 +11,7 @@ import shutil
 from typing import List, Dict, Optional, Any, Tuple, Union
 from threading import Thread
 from contextlib import redirect_stdout
+from urllib.parse import urlparse, unquote
 
 from pyrogram import Client, filters
 from pyrogram.types import Message
@@ -201,8 +202,18 @@ class AnimeBot:
             
             if fname:
                 fname = re.sub(r'[\\/*?:"<>|]', "", fname).strip()
-            else:
-                fname = f"download_{message.id}_{current}_{label.replace(' ', '_')}.mkv"
+            
+            if not fname or fname.startswith("download_") or len(fname) < 5:
+                # Smart reconstruction based on page info and metadata
+                # Pattern: [Anime Name] - [Episode] [Quality].mp4
+                clean_series = self._clean_noise(series_info or "Anime")
+                # Extract number from ep_data['episode'] or current index
+                ep_num = re.search(r'(\d+)', ep_data.get('episode', ''))
+                ep_str = f"E{ep_num.group(1).zfill(2)}" if ep_num else f"E{str(current).zfill(2)}"
+                
+                clean_label = label.upper().replace(" ", "")
+                fname = f"{clean_series} - {ep_str} [{clean_label}].mp4"
+                logger.info(f"[*] Smart Reconstruction: {fname}")
                 
             fpath = os.path.join(req_dir, fname)
             
@@ -277,18 +288,27 @@ class AnimeBot:
             logger.warning(f"Aria2c fail: {e}")
 
         try:
-            # Sync impersonation with the bypasser (Chrome 124)
+            # Sync session with bypasser for maximum compatibility
             with currequests.Session(impersonate="chrome124") as s:
                 if meta.get('cookies'): s.cookies.update(meta['cookies'])
-                logger.info(f"[*] Fallback download starting for: {url[:50]}...")
-                r = s.get(url, stream=True, headers={
+                logger.info(f"[*] Fallback download starting (Chrome 124): {url[:60]}...")
+                
+                # Professional headers
+                headers = {
                     "Referer": meta.get('referer', ''),
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                    "Connection": "keep-alive"
-                }, timeout=60)
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Connection": "keep-alive",
+                    "Upgrade-Insecure-Requests": "1"
+                }
+                # Inject XSRF token if found in cookies (common for Laravel MQ API)
+                xsrf_token = s.cookies.get("XSRF-TOKEN")
+                if xsrf_token: headers["X-XSRF-TOKEN"] = unquote(xsrf_token)
+
+                r = s.get(url, stream=True, headers=headers, timeout=60, allow_redirects=True)
                 
                 if r.status_code != 200:
-                    logger.error(f"[*] Fallback GET failed: {r.status_code}")
+                    logger.error(f"[*] Fallback failed (Status {r.status_code}). Body: {r.text[:100]}...")
                     return False
                     
                 total_size = int(r.headers.get('content-length', 0))

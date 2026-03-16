@@ -497,13 +497,19 @@ class RareAnimes:
 
     def resolve_filename(self, url: str, referer: Optional[str] = None, cookies: Optional[Dict] = None) -> Optional[str]:
         """
-        Passive filename resolution to avoid 'consuming' one-time download links.
-        Strictly tries HEAD first. Only uses GET for non-generative URLs.
+        Zero-Touch filename resolution to avoid 'consuming' one-time download links.
+        Strictly skips hitting 'generative' or 'tokenized' domains.
         """
+        # Mirrors that are known to consume on ANY hit (even HEAD)
+        is_sensitive = any(x in url.lower() for x in ["swift", "multiquality", "downlead", "monster", "leech", "generate"])
+        if is_sensitive:
+            logger.debug(f"Zero-Touch: Skipping resolution for sensitive mirror: {url[:50]}...")
+            return None
+
         headers = {
             "Referer": referer or self.ROOT_URL,
             "User-Agent": self.UA,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
         }
         
@@ -511,25 +517,17 @@ class RareAnimes:
             with currequests.Session(impersonate="chrome124") as session:
                 if cookies: session.cookies.update(cookies)
                 
-                # HEAD request is safe - doesn't consume generative links
+                # HEAD request is safe for non-generative mirrors
                 try:
                     res = session.head(url, headers=headers, allow_redirects=True, timeout=12)
                     filename = self.get_filename_from_cd(res.headers.get("Content-Disposition"))
                     if filename: return filename
                     
-                    # If HEAD fails or gives no CD, check URL path
                     path = urlparse(res.url).path
                     basename = os.path.basename(path)
-                    if "." in basename and not any(x in basename.lower() for x in ["zipper", "leech", "downlead", "token"]):
+                    if "." in basename and not any(x in basename.lower() for x in ["zipper", "leech", "downlead", "token", "generate"]):
                         return unquote(basename)
                 except: pass
-
-                # Only try GET if the URL doesn't look like a temporary token/generator
-                # Links from MQ are often temporary; consuming them here breaks the downloader.
-                is_generative = any(x in url.lower() for x in ["swift", "multiquality", "downlead", "generate"])
-                if is_generative:
-                    logger.debug("Skipping GET resolution for generative link to avoid consumption.")
-                    return None
 
                 res = session.get(url, headers=headers, stream=True, allow_redirects=True, timeout=15)
                 filename = self.get_filename_from_cd(res.headers.get("Content-Disposition"))
