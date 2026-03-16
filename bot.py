@@ -207,10 +207,16 @@ class AnimeBot:
             fpath = os.path.join(req_dir, fname)
             
             # Download
+            logger.info(f"[*] Starting download: {fname}")
+            await Utils.safe_edit(status, f"🚀 **Downloading {label}**...", force=True)
             success = await self._download_manager(url, fpath, status, meta)
-            if not success: continue
+            if not success:
+                logger.error(f"[!] Download failed for: {fname}")
+                await Utils.safe_edit(status, f"❌ **Download Failed** [{label}]", force=True)
+                continue
             
             # Metadata & Upload
+            logger.info(f"[*] Extracting meta for: {fname}")
             await Utils.safe_edit(status, f"⚙️ **Processing Meta {current}/{total}...**", force=True)
             w, h, dur = await self._get_video_meta(fpath)
             thumb = await self._make_thumb(fpath, dur)
@@ -271,15 +277,39 @@ class AnimeBot:
             logger.warning(f"Aria2c fail: {e}")
 
         try:
-            with currequests.Session(impersonate="chrome110") as s:
+            # Sync impersonation with the bypasser (Chrome 124)
+            with currequests.Session(impersonate="chrome124") as s:
                 if meta.get('cookies'): s.cookies.update(meta['cookies'])
-                r = s.get(url, stream=True, headers={"Referer": meta.get('referer', '')}, timeout=60)
-                if r.status_code != 200: return False
+                logger.info(f"[*] Fallback download starting for: {url[:50]}...")
+                r = s.get(url, stream=True, headers={
+                    "Referer": meta.get('referer', ''),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                    "Connection": "keep-alive"
+                }, timeout=60)
+                
+                if r.status_code != 200:
+                    logger.error(f"[*] Fallback GET failed: {r.status_code}")
+                    return False
+                    
+                total_size = int(r.headers.get('content-length', 0))
+                downloaded = 0
+                last_update = 0
+                
                 with open(path, 'wb') as f:
                     for chunk in r.iter_content(1024*1024):
-                        if chunk: f.write(chunk)
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            # Progress update every 5MB or 3s
+                            if total_size and time.time() - last_update > 3:
+                                p = int(downloaded * 100 / total_size)
+                                bar = "█" * (p//10) + "░" * (10 - p//10)
+                                await Utils.safe_edit(status, f"🚀 **Downloading (Fallback)** [{p}%]\n`{bar}`")
+                                last_update = time.time()
                 return os.path.exists(path)
-        except: return False
+        except Exception as e:
+            logger.error(f"[*] Fallback error: {e}")
+            return False
 
     def _make_caption(self, path: str, size: int, dur: int, series_info: Optional[str]) -> str:
         basename = os.path.basename(path)
