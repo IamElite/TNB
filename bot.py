@@ -40,6 +40,11 @@ class Config:
     
     DEFAULT_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     MAX_FILE_SIZE = 2000 * 1024 * 1024 # 2GB for Telegram
+    
+    # Speed Optimization Constants
+    MAX_DOWNLOAD_WORKERS = 15
+    MAX_UPLOAD_PARALLEL = 15
+    PROGRESS_UPDATE_INTERVAL = 5
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -461,6 +466,13 @@ class RareAnimes:
             if m: return unquote(m.group(1) or m.group(2) or m.group(3))
             return os.path.basename(urlparse(res.url).path)
         except: return None
+
+# --- UTILITIES ---
+class Utils:
+    EDIT_STATES: Dict[int, Dict[str, Any]] = {}
+    _NET_IO = None
+    _NET_TIME = None
+
     @staticmethod
     def progress_bar(p, l=15):
         f = int(l * p / 100)
@@ -524,12 +536,6 @@ class RareAnimes:
         
         return res
 
-# --- UTILITIES ---
-class Utils:
-    EDIT_STATES: Dict[int, Dict[str, Any]] = {}
-    _NET_IO = None
-    _NET_TIME = None
-
     @staticmethod
     def human_bytes(size: float) -> str:
         if not size: return "0 B"
@@ -562,18 +568,26 @@ class Utils:
 # --- CORE ENGINE ---
 class AnimeBot:
     def __init__(self):
-        self.app = Client("anime_bot", Config.API_ID, Config.API_HASH, bot_token=Config.BOT_TOKEN)
+        self.app = Client(
+            "anime_bot",
+            api_id=Config.API_ID,
+            api_hash=Config.API_HASH,
+            bot_token=Config.BOT_TOKEN,
+            max_concurrent_transmissions=100,
+            sleep_threshold=60,
+            in_memory=True,
+        )
         self._setup_handlers()
         if not os.path.exists(Config.DOWNLOAD_DIR): os.makedirs(Config.DOWNLOAD_DIR)
 
     def _setup_handlers(self):
         @self.app.on_message(filters.command("start") & filters.incoming)
-        async def start_handler(c, m): await m.reply("✅ **Anime Bot Pro** is active.\nUsage: `/get <url> [selection]`")
+        async def start_handler(c, m): await m.reply("✅ **Anime Bot Pro** is active.\nUsage: `/grab <url> [selection]`")
 
-        @self.app.on_message(filters.command("get") & filters.incoming)
+        @self.app.on_message(filters.command("grab") & filters.incoming)
         async def get_handler(c, m):
             if not self._is_auth(m): return
-            if len(m.command) < 2: return await m.reply("Usage: `/get <url> [selection]`")
+            if len(m.command) < 2: return await m.reply("Usage: `/grab <url> [selection]`")
             url, selection = m.command[1], self._parse_selection(m.command[2:])
             status = await m.reply("🔍 **Analyzing...**")
             try:
@@ -759,7 +773,7 @@ class AnimeBot:
                         if chunk:
                             f.write(chunk)
                             curr += len(chunk)
-                            if time.time() - last_up > 4:
+                            if time.time() - last_up > Config.PROGRESS_UPDATE_INTERVAL:
                                 p = curr * 100 / total if total else 0
                                 fname = os.path.basename(path)
                                 speed = curr / (time.time() - start_t)
@@ -870,7 +884,7 @@ class AnimeBot:
 
     async def _upload_progress(self, cur, tot, ud, msg, start, fname):
         p = cur*100/tot if tot else 0
-        if time.time() - getattr(self, '_last_up', 0) > 4:
+        if time.time() - getattr(self, '_last_up', 0) > Config.PROGRESS_UPDATE_INTERVAL:
             speed = cur / (time.time() - start) if (time.time() - start) > 0 else 0
             # Advanced Box UI
             msg_text = Utils.format_progress(fname, "⏫", ud, p, speed, cur, tot, start)
