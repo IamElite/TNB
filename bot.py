@@ -132,21 +132,47 @@ class RareAnimes:
             return {"error": str(e), "episodes": []}
 
     def _scrape_series_metadata(self, soup: BeautifulSoup, url: str) -> str:
+        """Extracts the anime name from 'Full Name' field or H1 tag."""
+        # 1. Look for 'Full Name' in the entry content
+        main_content = soup.select_one(".entry-content, article, #main") or soup
+        for p in main_content.find_all("p"):
+            text = p.get_text(" ", strip=True)
+            if "Full Name:" in text:
+                span = p.find("span")
+                if span:
+                    name = span.get_text(strip=True)
+                else:
+                    name = text.split("Full Name:")[-1].strip()
+                # Clean up icons or common suffixes
+                name = re.sub(r'[🌐📰🎬🏝️📊⏱️]', '', name).strip()
+                if name: return name
+
+        # 2. Fallback to H1
         h1 = soup.find("h1")
-        if h1: return h1.get_text(strip=True)
+        if h1:
+            h1_text = h1.get_text(strip=True)
+            # Remove "Hindi Dubbed Episodes Download HD" and similar patterns
+            h1_text = re.sub(r'(Season\s*\d+|Hindi\s*Dubbed.*|Episodes.*|Download.*|HD|720p|480p|1080p)', '', h1_text, flags=re.I).strip()
+            if h1_text: return h1_text
+
+        # 3. Fallback to URL part
         return url.rstrip("/").split("/")[-1].replace("-", " ").title()
 
     def _extract_episodes(self, html: str, referer: str) -> List[Dict[str, Any]]:
         """Parses HTML to find and group episode links using contextual headings."""
         soup = BeautifulSoup(html, "html.parser")
+        main_content = soup.select_one(".entry-content, article, #main")
+        if not main_content:
+            logger.warning("[!] Main content container not found, falling back to full soup.")
+            main_content = soup
+
         potential_links = []
         seen_urls = set()
         last_found_label = None
         fallback_counter = 1
 
-        # Walk through all elements that might provide labels or links
-        # We look for text nodes containing "Episode" and <a> tags
-        for element in soup.find_all(["p", "div", "h1", "h2", "h3", "h4", "span", "a"]):
+        # Walk through all elements that might provide labels or links within main_content
+        for element in main_content.find_all(["p", "div", "h1", "h2", "h3", "h4", "span", "a"]):
             if element.name == "a" and element.get("href"):
                 href = element["href"]
                 tag_text = element.get_text(strip=True)
@@ -209,10 +235,11 @@ class RareAnimes:
             r = self.session.get(hub_url, timeout=15)
             if r.status_code != 200: return []
             soup = BeautifulSoup(r.text, "html.parser")
+            main_content = soup.select_one(".entry-content, article, #main, .download-links, .download-box") or soup
             eps = []
             seen = set()
             f_count = 1
-            for a in soup.find_all("a", href=True):
+            for a in main_content.find_all("a", href=True):
                 href = a["href"]
                 if any(x in href for x in ["codedew.com/zipper/", "multiquality.click/downlead/"]):
                     if href in seen: continue
@@ -255,18 +282,23 @@ class RareAnimes:
                 if resp.status_code != 200: return None
                 
                 # Plan A: Search for direct tokens or MQ links in HTML
+                # Restricted search area to avoid sidebar/menu noise
+                soup = BeautifulSoup(resp.text, "html.parser")
+                main_zone = soup.select_one(".entry-content, article, #main, .download-links, .download-box") or soup
+                main_html = str(main_zone)
+                
                 # Look for rtiwatch (Old but still used sometimes)
-                token_match = re.search(r'name="rtiwatch"\s+value="([^"]+)"', resp.text)
+                token_match = re.search(r'name="rtiwatch"\s+value="([^"]+)"', main_html)
                 if token_match and token_match.group(1) not in ["notranslate", ""]:
                     return self.process_multiquality(f"{self.MQ_BASE_URL}downlead/{token_match.group(1)}/")
                 
                 # Look for multiquality/downlead links
-                mq_link = re.search(r'https?://(?:swift\.)?multiquality\.click/downlead/([^/\"\'\s>]+)', resp.text)
+                mq_link = re.search(r'https?://(?:swift\.)?multiquality\.click/downlead/([^/\"\'\s>]+)', main_html)
                 if mq_link:
                     return self.process_multiquality(f"{self.MQ_BASE_URL}downlead/{mq_link.group(1)}/")
                 
                 # Look for ziptron, liptron or multiquality internal links
-                token_link = re.search(r'/(?:ziptron\.php|liptron\.php|multiquality)/\?(?:url|id)=([^/\"\'\s>&\#]+)', resp.text)
+                token_link = re.search(r'/(?:ziptron\.php|liptron\.php|multiquality)/\?(?:url|id)=([^/\"\'\s>&\#]+)', main_html)
                 if token_link:
                     token = token_link.group(1)
                     # If it's short base64, it might be the token. If it's very long, it might be an encrypted URL (ignore)
@@ -274,17 +306,18 @@ class RareAnimes:
                         return self.process_multiquality(f"{self.MQ_BASE_URL}downlead/{token}/")
                 
                 # Look for tokens in JS variables (Token Hunter)
-                # We focus on script tags to avoid catching UI element IDs like "progress-fill"
+                # We focus on script tags within or near the main content
                 scripts = re.findall(r'<script.*?>\s*(.*?)\s*</script>', resp.text, re.DOTALL | re.I)
                 potential_tokens = []
                 
                 # Regex for variables: fid, fileId, video_id, token, id (if in script)
+                # Refined to avoid descriptive strings with multiple hyphens/underscores
                 for script in scripts:
-                    found = re.findall(r'(?:fid|fileId|video_id|token|["\']id["\'])\s*[:=]\s*["\']([a-zA-Z0-9_\-]{14,40})["\']', script, re.I)
+                    found = re.findall(r'(?:fid|fileId|video_id|token|["\']id["\'])\s*[:=]\s*["\']([a-zA-Z0-9]{14,40})["\']', script, re.I)
                     potential_tokens.extend(found)
                 
-                # Also check for liptron/ziptron links anywhere
-                url_tokens = re.findall(r'/(?:ziptron\.php|liptron\.php|multiquality)/\?(?:url|id)=([a-zA-Z0-9_\-]{13,40})', resp.text)
+                # Also check for liptron/ziptron links anywhere in main content
+                url_tokens = re.findall(r'/(?:ziptron\.php|liptron\.php|multiquality)/\?(?:url|id)=([a-zA-Z0-9_\-]{13,40})', main_html)
                 potential_tokens.extend(url_tokens)
 
                 for token in potential_tokens:
@@ -300,9 +333,18 @@ class RareAnimes:
                 soup = BeautifulSoup(resp.text, "html.parser")
                 next_url = self._find_next_button(soup, curr_url)
                 if not next_url:
-                    # Final attempt: just look for ANY gate-like link that isn't the current one
-                    for a in soup.find_all("a", href=True):
+                    # Final attempt: just look for ANY gate-like link that isn't the current one (restricted to main zone)
+                    for a in main_zone.find_all("a", href=True):
                         href = urljoin(curr_url, a["href"])
+                        # Basic URL validation
+                        if not href.startswith("http"): continue
+                        try:
+                            parsed = urlparse(href)
+                            if ":" in parsed.netloc: # Port check
+                                port_part = parsed.netloc.split(":")[-1]
+                                if port_part and not port_part.isdigit(): continue
+                        except: continue
+
                         is_gate = any(x in href for x in ["/zipper/", "/watchbeta/", "/watch/", "/multiquality/"])
                         if is_gate and href != curr_url and not href.startswith("javascript:"):
                             next_url = href
@@ -326,83 +368,51 @@ class RareAnimes:
                     return url
         return None
 
-    def process_multiquality(self, url: str) -> Optional[List[Dict]]:
+    def process_multiquality(self, url: str) -> Optional[List[Dict[str, str]]]:
+        """Final stage: Hits the MultQuality API to get CDN download links."""
         try:
             logger.info(f"[*] Fetching final links from MQ page: {url}")
-            resp = self.session.get(url, headers={"Referer": self.ROOT_URL}, timeout=15)
-            if resp.status_code != 200:
-                logger.error(f"[!] MQ Page Error: {resp.status_code}")
+            resp = self.session.get(url, timeout=15)
+            if "window.juicyData =" not in resp.text:
+                logger.error("[!] window.juicyData not found on MQ page")
                 return None
-                
-            # Robust JuicyData extraction using brace balancing
+            
+            # Find the start of the JSON object
+            start_marker = "window.juicyData ="
+            start_index = resp.text.find(start_marker)
+            if start_index == -1: return None
+            
+            # Slice from the first '{' for robust JSON extraction
+            json_start = resp.text.find("{", start_index)
+            if json_start == -1: return None
+            
+            # Use raw_decode to parse the JSON and ignore trailing garbage (like semi-colons)
             try:
-                start_marker = "window.juicyData ="
-                start_idx = resp.text.find(start_marker)
-                if start_idx == -1:
-                    logger.error("[!] window.juicyData not found on MQ page")
-                    return None
-                
-                # Find the first '{'
-                actual_start = resp.text.find("{", start_idx)
-                if actual_start == -1: return None
-                
-                # Balance braces
-                brace_count = 0
-                in_str = False
-                escape = False
-                jd_str = None
-                
-                for i in range(actual_start, len(resp.text)):
-                    char = resp.text[i]
-                    if char == '"' and not escape:
-                        in_str = not in_str
-                    if not in_str:
-                        if char == '{': brace_count += 1
-                        elif char == '}':
-                            brace_count -= 1
-                            if brace_count == 0:
-                                jd_str = resp.text[actual_start:i+1]
-                                break
-                    escape = (char == '\\' and not escape)
-                
-                if not jd_str:
-                    logger.error("[!] Could not find balanced JSON object for JuicyData")
-                    return None
-                    
-                jd = json.loads(jd_str)["data"]
-                # Detailed route logging
-                route = jd.get("routes", {}).get("links", "MISSING")
-                logger.info(f"[*] MQ Route: {route} | Token: {jd.get('token', 'MISSING')[:10]}...")
+                jd, index = json.JSONDecoder().raw_decode(resp.text[json_start:])
+                jd_data = jd.get("data", jd)
+                logger.info("[+] JuicyData parsed successfully using raw_decode.")
             except Exception as e:
-                logger.error(f"[!] JuicyData parse error: {e}")
+                logger.error(f"[!] JSON Decoder error: {e}")
                 return None
             
-            # Link generation wait
-            time.sleep(4.0)
+            # Small delay to mimic human/browser behavior
+            time.sleep(1.0)
             
-            api_url = urljoin(self.MQ_BASE_URL, jd["routes"]["links"])
-            
-            # Log session cookies for debugging
-            cookie_names = list(self.session.cookies.keys())
-            logger.info(f"[*] MQ Session Cookies: {', '.join(cookie_names)}")
-            
+            api_url = urljoin(self.MQ_BASE_URL, jd_data["routes"]["links"])
             headers = {
                 "Origin": self.MQ_BASE_URL.rstrip("/"),
                 "Referer": url,
                 "User-Agent": self.UA,
                 "Accept": "application/json, text/javascript, */*; q=0.01",
-                "Accept-Language": "en-US,en;q=0.9",
                 "Content-Type": "application/json",
                 "X-Requested-With": "XMLHttpRequest",
                 "X-XSRF-TOKEN": unquote(self.session.cookies.get("XSRF-TOKEN", "")),
-                "Sec-CH-UA": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
                 "Sec-CH-UA-Mobile": "?0",
-                "Sec-CH-UA-Platform": '"Linux"',
                 "Sec-Fetch-Dest": "empty",
                 "Sec-Fetch-Mode": "cors",
                 "Sec-Fetch-Site": "same-origin"
             }
-            payload = {"captcha": None, "_token": jd["token"]}
+            payload = {"captcha": None, "_token": jd_data["token"]}
             
             for attempt in range(1, 4):
                 try:
@@ -841,8 +851,9 @@ class AnimeBot:
             s_match = re.search(r'S(\d+)|Season\s*(\d+)', series_info, re.I)
             if s_match: season = (s_match.group(1) or s_match.group(2)).zfill(2)
             
-        # Clean title for caption (Remove Season info)
-        name = self._clean_title(series_info or info['name'])
+        # Clean title for caption (Remove Season info and unwanted suffixes)
+        name = series_info if series_info else info['name']
+        name = self._clean_title(name)
         
         q = re.search(r'(\d{3,4}p)', path, re.I)
         q_str = q.group(1).upper() if q else "720P"
