@@ -131,32 +131,53 @@ class RareAnimes:
             logger.error(f"Error in get_links: {e}", exc_info=True)
             return {"error": str(e), "episodes": []}
 
-    def _scrape_series_metadata(self, soup: BeautifulSoup, url: str) -> str:
-        """Extracts the anime name from 'Full Name' field or H1 tag."""
-        # 1. Look for 'Full Name' in the entry content
+    def _scrape_series_metadata(self, soup: BeautifulSoup, url: str) -> Dict[str, Any]:
+        """Extracts comprehensive metadata: Name, Season, and expected Qualities."""
+        metadata = {
+            "name": "Unknown",
+            "season": None,
+            "expected_qualities": []
+        }
+        
         main_content = soup.select_one(".entry-content, article, #main") or soup
+        content_text = main_content.get_text(" ", strip=True)
+
+        # 1. Extract Full Name
         for p in main_content.find_all("p"):
-            text = p.get_text(" ", strip=True)
-            if "Full Name:" in text:
+            p_text = p.get_text(" ", strip=True)
+            if "Full Name:" in p_text:
                 span = p.find("span")
-                if span:
-                    name = span.get_text(strip=True)
-                else:
-                    name = text.split("Full Name:")[-1].strip()
-                # Clean up icons or common suffixes
-                name = re.sub(r'[🌐📰🎬🏝️📊⏱️]', '', name).strip()
-                if name: return name
+                name = span.get_text(strip=True) if span else p_text.split("Full Name:")[-1].strip()
+                metadata["name"] = re.sub(r'[🌐📰🎬🏝️📊⏱️]', '', name).strip()
+                break
+        
+        if metadata["name"] == "Unknown":
+            h1 = soup.find("h1")
+            if h1:
+                h1_text = h1.get_text(strip=True)
+                h1_text = re.sub(r'(Season\s*\d+|Hindi\s*Dubbed.*|Episodes.*|Download.*|HD|720p|480p|1080p)', '', h1_text, flags=re.I).strip()
+                metadata["name"] = h1_text
+            else:
+                metadata["name"] = url.rstrip("/").split("/")[-1].replace("-", " ").title()
 
-        # 2. Fallback to H1
-        h1 = soup.find("h1")
-        if h1:
-            h1_text = h1.get_text(strip=True)
-            # Remove "Hindi Dubbed Episodes Download HD" and similar patterns
-            h1_text = re.sub(r'(Season\s*\d+|Hindi\s*Dubbed.*|Episodes.*|Download.*|HD|720p|480p|1080p)', '', h1_text, flags=re.I).strip()
-            if h1_text: return h1_text
+        # 2. Extract Season
+        season_match = re.search(r'Season:\s*(\d+)', content_text, re.I)
+        if season_match:
+            metadata["season"] = season_match.group(1).zfill(2)
+        else:
+            # Fallback: check the name or URL for season
+            s_match = re.search(r'Season\s*(\d+)|S(\d+)', metadata["name"] + " " + url, re.I)
+            if s_match:
+                metadata["season"] = (s_match.group(1) or s_match.group(2)).zfill(2)
 
-        # 3. Fallback to URL part
-        return url.rstrip("/").split("/")[-1].replace("-", " ").title()
+        # 3. Extract Expected Qualities
+        quality_match = re.search(r'Quality:\s*\((.*?)\)', content_text, re.I)
+        if quality_match:
+            q_str = quality_match.group(1)
+            metadata["expected_qualities"] = [q.strip().lower() for q in q_str.split(",")]
+        
+        logger.info(f"[*] Extracted Series Metadata: {metadata}")
+        return metadata
 
     def _extract_episodes(self, html: str, referer: str) -> List[Dict[str, Any]]:
         """Parses HTML to find and group episode links using contextual headings."""
@@ -858,14 +879,19 @@ class AnimeBot:
     def _make_caption(self, path, size, dur, series_info):
         info = self._parse_filename(os.path.basename(path))
         
-        # Priority: parse from path, then series_info
-        season = info.get('season')
-        if not season and series_info:
-            s_match = re.search(r'S(\d+)|Season\s*(\d+)', series_info, re.I)
+        # Priority: parse from series_info dict, then path
+        season = None
+        if isinstance(series_info, dict):
+            season = series_info.get('season')
+            name = series_info.get('name', 'Unknown')
+        else:
+            name = series_info or info['name']
+
+        if not season:
+            s_match = re.search(r'S(\d+)|Season\s*(\d+)', name + " " + (series_info if isinstance(series_info, str) else ""), re.I)
             if s_match: season = (s_match.group(1) or s_match.group(2)).zfill(2)
             
         # Clean title for caption (Remove Season info and unwanted suffixes)
-        name = series_info if series_info else info['name']
         name = self._clean_title(name)
         
         q = re.search(r'(\d{3,4}p)', path, re.I)
