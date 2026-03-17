@@ -298,11 +298,12 @@ class RareAnimes:
                     return self.process_multiquality(f"{self.MQ_BASE_URL}downlead/{mq_link.group(1)}/")
                 
                 # Look for ziptron, liptron or multiquality internal links
-                token_link = re.search(r'/(?:ziptron\.php|liptron\.php|multiquality)/\?(?:url|id)=([^/\"\'\s>&\#]+)', main_html)
+                # Handle both ?url=TOKEN and ?TOKEN formats
+                token_link = re.search(r'/(?:ziptron\.php|liptron\.php|multiquality)/\?(?:(?:url|id)=)?([^/\"\'\s>&\#]+)', main_html)
                 if token_link:
                     token = token_link.group(1)
-                    # If it's short base64, it might be the token. If it's very long, it might be an encrypted URL (ignore)
-                    if 10 < len(token) < 40:
+                    if 10 < len(token) < 50:
+                        logger.info(f"[+] Found Redirect Token: {token}")
                         return self.process_multiquality(f"{self.MQ_BASE_URL}downlead/{token}/")
                 
                 # Look for tokens in JS variables (Token Hunter)
@@ -322,7 +323,14 @@ class RareAnimes:
 
                 for token in potential_tokens:
                     # Filter out common false positives
-                    if any(x in token.lower() for x in ["wrapper", "container", "loader", "progress", "button", "player"]):
+                    # 1. Block known keywords
+                    if any(x in token.lower() for x in ["wrapper", "container", "loader", "progress", "button", "player", "header", "footer"]):
+                        continue
+                    # 2. Block all-lowercase tokens (likely CSS classes/IDs) if they are short or lack numbers
+                    if token.islower() and not any(c.isdigit() for c in token) and len(token) < 16:
+                        continue
+                    # 3. Block tokens with too many repeating generic patterns
+                    if "xxxx" in token or "aaaa" in token:
                         continue
                     
                     logger.info(f"[+] Token Hunter found potential token: {token}")
@@ -373,8 +381,13 @@ class RareAnimes:
         try:
             logger.info(f"[*] Fetching final links from MQ page: {url}")
             resp = self.session.get(url, timeout=15)
+            if resp.status_code != 200:
+                logger.error(f"[!] MQ Page Error: {resp.status_code} for {url}")
+                return None
+
             if "window.juicyData =" not in resp.text:
-                logger.error("[!] window.juicyData not found on MQ page")
+                snippet = resp.text[:200].replace('\n', ' ')
+                logger.error(f"[!] window.juicyData not found on MQ page. Status: {resp.status_code}. Body Snippet: {snippet}...")
                 return None
             
             # Find the start of the JSON object
