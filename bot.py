@@ -557,7 +557,11 @@ class Utils:
     def get_system_stats():
         try:
             cpu = psutil.cpu_percent()
-            ram = psutil.virtual_memory().used / (1024 * 1024)
+            mem = psutil.virtual_memory()
+            ram_str = f"{Utils.human_bytes(mem.used)}/{Utils.human_bytes(mem.total)}"
+            
+            disk = psutil.disk_usage('/')
+            disk_str = f"{Utils.human_bytes(disk.used)}/{Utils.human_bytes(disk.total)}"
             
             # Net Speed Logic
             now = time.time()
@@ -567,20 +571,18 @@ class Utils:
                 Utils._NET_IO = io
                 Utils._NET_TIME = now
                 net_mbps = 0.0
-                net_mib = 0.0
             else:
                 dt = max(now - Utils._NET_TIME, 0.1)
                 t_bytes = (io.bytes_sent - Utils._NET_IO.bytes_sent) + (io.bytes_recv - Utils._NET_IO.bytes_recv)
                 net_mbps = (t_bytes * 8) / (1024 * 1024 * dt)
-                net_mib = (io.bytes_recv - Utils._NET_IO.bytes_recv) / (1024 * 1024 * dt)
                 
                 Utils._NET_IO = io
                 Utils._NET_TIME = now
                 
-            return cpu, ram, net_mbps, net_mib
+            return cpu, ram_str, net_mbps, disk_str
         except Exception as e:
             logger.error(f"Error in get_system_stats: {e}")
-            return 0, 0, 0, 0
+            return 0, "?/?", 0, "?/?"
 
     @staticmethod
     def get_eta(current, total, speed):
@@ -590,7 +592,7 @@ class Utils:
 
     @staticmethod
     def format_progress(filename, status_icon, status_text, p, speed, curr_size, tot_size, start_time):
-        cpu, ram, net_mbps, net_mib = Utils.get_system_stats()
+        cpu, ram_str, net_mbps, disk_str = Utils.get_system_stats()
         eta = Utils.get_eta(curr_size, tot_size, speed)
         bar = Utils.progress_bar(p, l=10)
         
@@ -606,8 +608,8 @@ class Utils:
         res += f"├ ⚡ **Speed**   : `{spd_str}`\n"
         res += f"├ 📦 **Size**    : `{sz_curr} / {sz_tot}`\n"
         res += f"└ ⏱ **ETA**     : `{eta}`\n\n"
-        res += f"🖥 **CPU**: `{cpu}%` | 💾 **RAM**: `{int(ram)}MB`"
-        res += f"\n🌐 **Net**: `{net_mbps:.1f} Mbps` | ⬇ `{net_mib:.1f} MiB/s`"
+        res += f"🖥 **CPU**: `{cpu}%` | 💾 **RAM**: `{ram_str}`"
+        res += f"\n🌐 **Net**: `{net_mbps:.1f} Mbps` | 🆓 **Free**: `{disk_str}`"
         
         return res
 
@@ -726,22 +728,34 @@ class AnimeBot:
         if not episodes:
             return await Utils.safe_edit(status, "❌ No episodes found. (Bypass failed or No Links)", force=True)
             
-        await Utils.safe_edit(status, f"✅ Found {len(episodes)} episodes. Starting batch processing...")
-        
-        for i, ep in enumerate(episodes, 1):
-            logger.info(f"[*] Dispatching Episode {i}/{len(episodes)}: {ep.get('episode')}")
-            await self._process_episode(m, ep, bypasser, status, len(episodes), i, res.get("series_info"))
-        
+        await Utils.safe_edit(status, f"✅ Found {len(episodes)} episodes. Starting concurrent batch processing...")
+        await self._process_all_episodes_concurrently(m, episodes, bypasser, res.get("series_info"))
         await status.delete()
 
     async def _handle_hindianime(self, m, url, selection, status):
         eps = await asyncio.to_thread(HindiAnimeZone().pro_main_bypass, url, selection=selection)
         if not eps: return await Utils.safe_edit(status, "❌ No episodes found.", force=True)
         # Create a dummy bypasser for consistency if needed, though HindiAnimeZone handles its own session
-        bypasser = RareAnimes() 
-        for i, ep in enumerate(eps, 1):
-            await self._process_episode(m, ep, bypasser, status, len(eps), i, ep.get("series_info"))
+        bypasser = RareAnimes()
+        await Utils.safe_edit(status, f"✅ Found {len(eps)} episodes. Starting concurrent batch processing...")
+        await self._process_all_episodes_concurrently(m, eps, bypasser, eps[0].get("series_info") if eps else None)
         await status.delete()
+
+    async def _process_all_episodes_concurrently(self, m, episodes, bypasser, series_info):
+        sem = asyncio.Semaphore(Config.MAX_DOWNLOAD_WORKERS)
+        
+        async def process_task(i, ep):
+            async with sem:
+                ep_status = await m.reply(f"⏳ **Queued Episode {i}/{len(episodes)}...**")
+                try:
+                    await self._process_episode(m, ep, bypasser, ep_status, len(episodes), i, series_info)
+                finally:
+                    try: await ep_status.delete()
+                    except: pass
+                    
+        tasks = [process_task(i, ep) for i, ep in enumerate(episodes, 1)]
+        if tasks:
+            await asyncio.gather(*tasks)
 
     async def _process_episode(self, m, ep, bypasser, status, total, current, series_info):
         try:
