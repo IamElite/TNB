@@ -4,6 +4,7 @@ FROM python:3.10-slim
 # Install system dependencies (ffmpeg) and clean up apt cache to keep image small
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ffmpeg aria2 ca-certificates && \
+    apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 # Set the working directory
@@ -11,7 +12,8 @@ WORKDIR /app
 
 # Copy requirements and install python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir --prefer-binary -r requirements.txt
 
 # Copy the rest of the application code
 COPY . .

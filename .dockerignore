@@ -15,3 +15,7 @@ Aptfile
 app.json
 Dockerfile
 .dockerignore
+downloads/
+thumbnails/
+venv/
+node_modules/
