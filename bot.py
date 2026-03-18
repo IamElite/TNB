@@ -706,13 +706,19 @@ class AnimeBot:
                 
                 if not fname or len(fname) < 5:
                     # Detect season for filename
-                    s = re.search(r'S(\d+)|Season\s*(\d+)', series_info or "", re.I)
-                    se_str = f"S{(s.group(1) or s.group(2)).zfill(2)}" if s else ""
+                    if isinstance(series_info, dict):
+                        season_val = series_info.get('season')
+                        se_str = f"S{str(season_val).zfill(2)}" if season_val else ""
+                        base_name = series_info.get('name', 'Anime')
+                    else:
+                        s = re.search(r'S(\d+)|Season\s*(\d+)', series_info or "", re.I)
+                        se_str = f"S{(s.group(1) or s.group(2)).zfill(2)}" if s else ""
+                        base_name = series_info or 'Anime'
                     
                     ep_num = re.search(r'(\d+)', ep.get('episode', ''))
                     ep_str = f"E{ep_num.group(1).zfill(2)}" if ep_num else f"E{str(current).zfill(2)}"
                     
-                    cleaned_name = self._clean_noise(series_info or 'Anime')
+                    cleaned_name = self._clean_noise(base_name)
                     # If se_str is already in cleaned_name, don't repeat
                     if se_str and (se_str in cleaned_name.upper() or f"SEASON {int(se_str[1:])}" in cleaned_name.upper()):
                         se_str = ""
