@@ -12,6 +12,7 @@ from typing import List, Dict, Optional, Any, Tuple, Union
 from threading import Thread
 from contextlib import redirect_stdout
 from urllib.parse import urlparse, unquote, urljoin
+from concurrent.futures import ThreadPoolExecutor
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -43,6 +44,10 @@ class Config:
     MAX_DOWNLOAD_WORKERS = 15
     MAX_UPLOAD_PARALLEL = 15
     PROGRESS_UPDATE_INTERVAL = 5
+    
+    # Concurrency Constants
+    HUB_MAX_WORKERS = 5
+    MIRROR_MAX_WORKERS = 8
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -123,14 +128,21 @@ class RareAnimes:
             selected_eps = self._filter_episodes(raw_eps, ep_start, ep_end)
             
             results = []
-            for ep in selected_eps:
+            if not selected_eps:
+                return {"episodes": [], "series_info": series_info}
+            
+            def process_ep(ep):
                 links = self._try_mirrors(ep["mirrors"])
-                entry = {
+                return {
                     "episode": ep["label"],
                     "downloads": links if links else [],
                     "metadata": {"cookies": self.session.cookies.get_dict(), "user_agent": self.UA}
                 }
-                results.append(entry)
+            
+            logger.info(f"[*] Bypassing mirrors for {len(selected_eps)} episodes concurrently...")
+            with ThreadPoolExecutor(max_workers=Config.MIRROR_MAX_WORKERS) as executor:
+                for res in executor.map(process_ep, selected_eps):
+                    results.append(res)
 
             return {"episodes": results, "series_info": series_info}
         except Exception as e:
@@ -220,7 +232,8 @@ class RareAnimes:
                         current_label = f"Episode {fallback_counter}"
                         fallback_counter += 1
                         
-                    is_hub = any(x in href for x in ["store.animetoonhindi.com", "/multiquality/", "multiquality.click"]) or is_hub_text
+                    is_mirror = any(x in href for x in ["codedew.com", "multiquality.click"])
+                    is_hub = (not is_mirror) and (any(x in href for x in ["store.animetoonhindi.com", "/multiquality/"]) or is_hub_text)
                     potential_links.append({"url": href, "label": current_label, "is_hub": is_hub})
             else:
                 # Update last seen label from text nodes
@@ -233,18 +246,30 @@ class RareAnimes:
 
         # Process hubs and group by episode number
         final_links = []
-        for item in potential_links:
-            if item["is_hub"]:
-                hub_eps = self._extract_hub_links(item["url"])
-                if hub_eps: 
-                    # If hub links don't have good labels, use the hub's label
-                    for h in hub_eps:
-                        if "Episode" not in h["label"]: h["label"] = item["label"]
-                    final_links.extend(hub_eps)
-                else: final_links.append(item)
-            else:
-                final_links.append(item)
+        hub_items = [item for item in potential_links if item["is_hub"]]
+        non_hub_items = [item for item in potential_links if not item["is_hub"]]
+        final_links.extend(non_hub_items)
+        
+        if hub_items:
+            logger.info(f"[*] Extracting from {len(hub_items)} hubs concurrently...")
+            with ThreadPoolExecutor(max_workers=Config.HUB_MAX_WORKERS) as executor:
+                future_to_item = {executor.submit(self._extract_hub_links, item["url"]): item for item in hub_items}
+                for future in future_to_item:
+                    item = future_to_item[future]
+                    try:
+                        hub_eps = future.result()
+                        if hub_eps: 
+                            # If hub links don't have good labels, use the hub's label
+                            for h in hub_eps:
+                                if "Episode" not in h["label"]: h["label"] = item["label"]
+                            final_links.extend(hub_eps)
+                        else: 
+                            final_links.append(item)
+                    except Exception as e:
+                        logger.error(f"[!] Hub extraction failed for {item['url']}: {e}")
+                        final_links.append(item)
                 
+
         grouped: Dict[str, List[Dict[str, str]]] = {}
         for link in final_links:
             ep_num = self._get_ep_num(link["label"])
