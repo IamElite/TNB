@@ -558,10 +558,10 @@ class Utils:
         try:
             cpu = psutil.cpu_percent()
             mem = psutil.virtual_memory()
-            ram_str = f"{Utils.human_bytes(mem.used)}/{Utils.human_bytes(mem.total)}"
+            ram_str = f"{Utils.human_bytes(mem.used)} / {Utils.human_bytes(mem.total)}"
             
             disk = psutil.disk_usage('/')
-            disk_str = f"{Utils.human_bytes(disk.used)}/{Utils.human_bytes(disk.total)}"
+            disk_str = f"{Utils.human_bytes(disk.free)} / {Utils.human_bytes(disk.total)}"
             
             # Net Speed Logic
             now = time.time()
@@ -582,7 +582,7 @@ class Utils:
             return cpu, ram_str, net_mbps, disk_str
         except Exception as e:
             logger.error(f"Error in get_system_stats: {e}")
-            return 0, "?/?", 0, "?/?"
+            return 0, "? / ?", 0, "? / ?"
 
     @staticmethod
     def get_eta(current, total, speed):
@@ -608,8 +608,9 @@ class Utils:
         res += f"├ ⚡ **Speed**   : `{spd_str}`\n"
         res += f"├ 📦 **Size**    : `{sz_curr} / {sz_tot}`\n"
         res += f"└ ⏱ **ETA**     : `{eta}`\n\n"
-        res += f"🖥 **CPU**: `{cpu}%` | 💾 **RAM**: `{ram_str}`"
-        res += f"\n🌐 **Net**: `{net_mbps:.1f} Mbps` | 🆓 **Free**: `{disk_str}`"
+        res += f"🖥 **CPU**: `{cpu}%` | 🌐 **Net**: `{net_mbps:.1f} Mbps`"
+        res += f"\n💾 **RAM**: `{ram_str}`"
+        res += f"\n🆓 **Free**: `{disk_str}`"
         
         return res
 
