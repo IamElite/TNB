@@ -1,6 +1,12 @@
 import os, io, sys, time, math, asyncio, json, re, logging, shutil
 import urllib3, traceback, psutil, uuid
 
+try:
+    import uvloop
+    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+except ImportError:
+    pass
+
 import requests as py_requests
 from typing import List, Dict, Optional, Any, Tuple, Union
 from threading import Thread
@@ -766,10 +772,10 @@ class AnimeBot:
             logger.info(f"[*] Warming up mirror for sensitive link: {urlparse(url).netloc}")
             await self._warmup_mirror(f"https://{urlparse(url).netloc}/", ua, cookies)
         
-        conn = "1" if is_sensitive else "12"
+        conn = "16" # Force 16 connections to maximize speed
         directory, filename = os.path.split(path)
         
-        cmd = ["aria2c", "-x", conn, "-s", conn, "-d", directory, "-o", filename, "--user-agent", ua, "--check-certificate=false"]
+        cmd = ["aria2c", "-x", conn, "-s", conn, "-j", conn, "--min-split-size=1M", "-d", directory, "-o", filename, "--user-agent", ua, "--check-certificate=false"]
         for k, v in headers.items():
             if k.lower() not in ["user-agent", "cookie"]:
                 cmd.extend(["--header", f"{k}: {v}"])

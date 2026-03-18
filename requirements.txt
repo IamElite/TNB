@@ -6,3 +6,4 @@ aiohttp
 curl_cffi
 flask
 psutil
+uvloop
