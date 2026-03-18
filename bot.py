@@ -731,8 +731,8 @@ class AnimeBot:
                 
                 await Utils.safe_edit(status, f"🚀 **Downloading {label}**...", force=True)
                 if await self._download_manager(url, fpath, status, meta):
-                    # Split if necessary
-                    paths = await self._split_video(fpath)
+                    # Faststart & Split if necessary
+                    paths = await self._split_video(fpath, status)
                     for p in paths:
                         await self._upload_file(m, p, status, current, total, label, series_info)
                         if os.path.exists(p): os.remove(p)
@@ -865,18 +865,28 @@ class AnimeBot:
                 try: os.remove(thumb)
                 except: pass
 
-    async def _split_video(self, path):
+    async def _split_video(self, path, status=None):
         size = os.path.getsize(path)
-        if size <= Config.MAX_FILE_SIZE: return [path]
+        if size <= Config.MAX_FILE_SIZE:
+            out = f"{path}.fs.mp4"
+            if status: await Utils.safe_edit(status, "⚡ **Optimizing video for Telegram Stream...**", force=True)
+            cmd = ["ffmpeg", "-v", "error", "-i", path, "-c", "copy", "-movflags", "+faststart", out, "-y"]
+            proc = await asyncio.create_subprocess_exec(*cmd)
+            await proc.wait()
+            if os.path.exists(out) and os.path.getsize(out) > 0:
+                os.remove(path)
+                os.rename(out, path)
+            return [path]
         
         logger.info(f"[*] Splitting {path}...")
+        if status: await Utils.safe_edit(status, "✂️ **Splitting large video...**", force=True)
         duration = (await self._get_video_meta(path))[2]
         parts = math.ceil(size / Config.MAX_FILE_SIZE)
         part_dur = duration / parts
         split_files = []
         for i in range(parts):
             out = f"{path}.part{i+1}.mp4"
-            cmd = ["ffmpeg", "-i", path, "-ss", str(i*part_dur), "-t", str(part_dur), "-c", "copy", out, "-y"]
+            cmd = ["ffmpeg", "-v", "error", "-i", path, "-ss", str(i*part_dur), "-t", str(part_dur), "-c", "copy", "-movflags", "+faststart", out, "-y"]
             proc = await asyncio.create_subprocess_exec(*cmd)
             await proc.wait()
             if os.path.exists(out): split_files.append(out)
