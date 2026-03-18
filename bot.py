@@ -601,6 +601,31 @@ class Utils:
         h, m = divmod(m, 60)
         return (f"{h}h " if h else "") + (f"{m}m " if m else "") + f"{s}s"
 
+    @staticmethod
+    def is_faststart(filepath: str) -> bool:
+        try:
+            with open(filepath, "rb") as f:
+                while True:
+                    header = f.read(8)
+                    if len(header) < 8: break
+                    size = int.from_bytes(header[:4], 'big')
+                    atom_type = header[4:8]
+                    
+                    if atom_type == b'moov': return True
+                    if atom_type == b'mdat': return False
+                    
+                    if size == 1:
+                        size = int.from_bytes(f.read(8), 'big')
+                        f.seek(size - 16, 1)
+                    elif size == 0:
+                        break
+                    else:
+                        f.seek(size - 8, 1)
+            return False
+        except Exception as e:
+            logger.error(f"Error checking faststart: {e}")
+            return False
+
     @classmethod
     async def safe_edit(cls, message: Message, text: str, force: bool = False, **kwargs):
         now = time.time()
@@ -874,6 +899,10 @@ class AnimeBot:
     async def _split_video(self, path, status=None):
         size = os.path.getsize(path)
         if size <= Config.MAX_FILE_SIZE:
+            if Utils.is_faststart(path):
+                logger.info(f"[*] {path} is already faststart optimized. Skipping ffmpeg.")
+                return [path]
+                
             out = f"{path}.fs.mp4"
             if status: await Utils.safe_edit(status, "⚡ **Optimizing video for Telegram Stream...**", force=True)
             cmd = ["ffmpeg", "-v", "error", "-i", path, "-c", "copy", "-movflags", "+faststart", out, "-y"]
