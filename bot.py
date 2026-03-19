@@ -648,82 +648,6 @@ class Utils:
             return False
         except: return False
 
-    @staticmethod
-    def faststart_optimize(path: str):
-        """Pure Python Instant Faststart (0.1s)"""
-        try:
-            moov_data = None
-            moov_pos = -1
-            mdat_pos = -1
-            ftyp_data = None
-            
-            with open(path, "rb") as f:
-                # 1. Map atoms
-                while True:
-                    curr = f.tell()
-                    header = f.read(8)
-                    if len(header) < 8: break
-                    size = int.from_bytes(header[:4], 'big')
-                    kind = header[4:8]
-                    
-                    if kind == b'ftyp':
-                        f.seek(curr)
-                        ftyp_data = f.read(size)
-                    elif kind == b'moov':
-                        moov_pos = curr
-                        f.seek(curr)
-                        moov_data = bytearray(f.read(size))
-                    elif kind == b'mdat':
-                        mdat_pos = curr
-                    
-                    if size == 1: size = int.from_bytes(f.read(8), 'big')
-                    if size <= 0: break
-                    f.seek(curr + size)
-
-            if moov_pos > mdat_pos and moov_data:
-                # 2. Patch Moov offsets
-                shift = len(moov_data)
-                idx = 0
-                while idx < len(moov_data) - 8:
-                    atom_size = int.from_bytes(moov_data[idx:idx+4], 'big')
-                    atom_type = moov_data[idx+4:idx+8]
-                    if atom_type in [b'stco', b'co64']:
-                        entry_count = int.from_bytes(moov_data[idx+12:idx+16], 'big')
-                        is_64 = (atom_type == b'co64')
-                        step = 8 if is_64 else 4
-                        offset_start = idx + 16
-                        for i in range(entry_count):
-                            start = offset_start + (i * step)
-                            old_off = int.from_bytes(moov_data[start:start+step], 'big')
-                            moov_data[start:start+step] = (old_off + shift).to_bytes(step, 'big')
-                    
-                    # Recurse into containers
-                    if atom_type in [b'moov', b'trak', b'mdia', b'minf', b'stbl']:
-                        idx += 8
-                    else:
-                        idx += atom_size if atom_size > 0 else 8
-
-                # 3. Write new file (fast copy)
-                out = path + ".fs"
-                with open(path, "rb") as src, open(out, "wb") as dst:
-                    dst.write(ftyp_data)
-                    dst.write(moov_data)
-                    src.seek(len(ftyp_data))
-                    while True:
-                        buf = src.read(1024*1024)
-                        if not buf: break
-                        # Skip original moov
-                        chunk_end = src.tell()
-                        if chunk_end > moov_pos:
-                            clip = len(buf) - (chunk_end - moov_pos)
-                            if clip > 0: dst.write(buf[:clip])
-                            break
-                        dst.write(buf)
-                os.replace(out, path)
-                return True
-        except Exception as e:
-            logger.error(f"Faststart error: {e}")
-        return False
 
     @classmethod
     async def safe_edit(cls, message: Message, text: str, force: bool = False, **kwargs):
@@ -814,20 +738,13 @@ class AnimeBot:
         await status.delete()
 
     async def _process_all_episodes_concurrently(self, m, episodes, bypasser, series_info):
-        sem = asyncio.Semaphore(Config.MAX_DOWNLOAD_WORKERS)
-        
-        async def process_task(i, ep):
-            async with sem:
-                ep_status = await m.reply(f"⏳ **Queued Episode {i}/{len(episodes)}...**")
-                try:
-                    await self._process_episode(m, ep, bypasser, ep_status, len(episodes), i, series_info)
-                finally:
-                    try: await ep_status.delete()
-                    except: pass
-                    
-        tasks = [process_task(i, ep) for i, ep in enumerate(episodes, 1)]
-        if tasks:
-            await asyncio.gather(*tasks)
+        for i, ep in enumerate(episodes, 1):
+            ep_status = await m.reply(f"⏳ **Processing Episode {i}/{len(episodes)}...**")
+            try:
+                await self._process_episode(m, ep, bypasser, ep_status, len(episodes), i, series_info)
+            finally:
+                try: await ep_status.delete()
+                except: pass
 
     async def _process_episode(self, m, ep, bypasser, status, total, current, series_info):
         try:
@@ -1014,8 +931,15 @@ class AnimeBot:
                 logger.info(f"[*] {path} is already optimized.")
                 return [path]
                 
-            if status: await Utils.safe_edit(status, "⚡ **Instant Optimization for Streaming...**", force=True)
-            await asyncio.to_thread(Utils.faststart_optimize, path)
+            out = f"{path}.fs.mp4"
+            if status: await Utils.safe_edit(status, "⚡ **Optimizing for Stream...**", force=True)
+            # Reverting to stable ffmpeg since custom patcher failed
+            cmd = ["ffmpeg", "-v", "error", "-i", path, "-c", "copy", "-movflags", "+faststart", out, "-y"]
+            proc = await asyncio.create_subprocess_exec(*cmd)
+            await proc.wait()
+            if os.path.exists(out) and os.path.getsize(out) > 0:
+                os.remove(path)
+                os.rename(out, path)
             return [path]
         
         logger.info(f"[*] Splitting {path}...")
