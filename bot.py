@@ -1107,7 +1107,7 @@ class AnimeBot:
 
     async def _get_video_meta(self, path):
         try:
-            cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,duration", "-of", "json", path]
+            cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=width,height,duration", "-of", "json", path]
             proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             stdout, stderr = await proc.communicate()
             if proc.returncode != 0:
@@ -1115,13 +1115,22 @@ class AnimeBot:
                 return 0, 0, 0
             
             data = json.loads(stdout)
-            if "streams" not in data or not data["streams"]:
-                return 0, 0, 0
-                
-            d = data["streams"][0]
-            width = int(d.get("width", 0))
-            height = int(d.get("height", 0))
-            duration = int(float(d.get("duration", 0)))
+            
+            # Check for format duration (usually more accurate)
+            duration = 0
+            fmt_dur = data.get("format", {}).get("duration")
+            if fmt_dur:
+                duration = int(float(fmt_dur))
+            
+            width = 0
+            height = 0
+            if "streams" in data and data["streams"]:
+                d = data["streams"][0]
+                width = int(d.get("width", 0))
+                height = int(d.get("height", 0))
+                if duration == 0:
+                    duration = int(float(d.get("duration", 0)))
+            
             return width, height, duration
         except Exception as e:
             logger.error(f"[!] Error extracting video meta: {e}")
@@ -1187,13 +1196,15 @@ class AnimeBot:
                 logger.info("[*] Hindi audio track NOT found via tags. Keeping all tracks to avoid accidental loss.")
                 return
 
-            # 2. Extract only Video (0:v), Selected Audio (0:hindi_idx), and Subtitles (0:s?)
-            if status: await Utils.safe_edit(status, "✂️ **Stripping Non-Hindi Audio Tracks...**", force=True)
-            # Use original extension to avoid container errors (e.g. MKV to MP4 with ASS subs fails)
+            # 2. Extract only Video (0:v) and Selected Audio (0:hindi_idx). STRIP SUBTITLES.
+            if status: await Utils.safe_edit(status, "✂️ **Stripping Non-Hindi Audio & Subtitles...**", force=True)
+            # Use original extension to avoid container errors
             ext = os.path.splitext(fpath)[1] or ".mp4"
             out_path = fpath + ".hin" + ext
-            # Map video, the specific audio index, and subtitles (optional)
-            cmd = ["ffmpeg", "-y", "-i", fpath, "-map", "0:v", "-map", f"0:{hindi_idx}", "-map", "0:s?", "-c", "copy", "-movflags", "+faststart", out_path]
+            
+            # Map video and specific audio. DO NOT MAP 0:s (subtitles) as per user request.
+            # Removed -movflags +faststart as it's for MP4 and can cause duration issues in other containers
+            cmd = ["ffmpeg", "-y", "-i", fpath, "-map", "0:v", "-map", f"0:{hindi_idx}", "-c", "copy", "-map_metadata", "0", out_path]
             proc = await asyncio.create_subprocess_exec(*cmd)
             await proc.wait()
             
