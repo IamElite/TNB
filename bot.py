@@ -873,6 +873,8 @@ class AnimeBot:
                 
                 await Utils.safe_edit(status, f"🚀 **Downloading {label}**...", force=True)
                 if await self._download_manager(url, fpath, status, meta):
+                    # Filter Hindi Audio (keep only Hindi track)
+                    await self._filter_hindi_audio(fpath, status)
                     # Faststart & Split if necessary
                     paths = await self._split_video(fpath, status)
                     for p in paths:
@@ -1144,6 +1146,56 @@ class AnimeBot:
             msg_text = Utils.format_progress(fname, "⏫", ud, p, speed, cur, tot, start)
             await Utils.safe_edit(msg, msg_text)
             self._last_up = time.time()
+
+    async def _filter_hindi_audio(self, fpath, status):
+        try:
+            # 1. Probe for audio streams using ffprobe
+            cmd = ["ffprobe", "-v", "error", "-show_entries", "stream=index:stream_tags=language,title", "-select_streams", "a", "-of", "json", fpath]
+            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.warning(f"[!] ffprobe failed for audio filtering: {stderr.decode()}")
+                return
+            
+            data = json.loads(stdout)
+            streams = data.get("streams", [])
+            if not streams: return 
+            
+            # If only one audio stream exists, we keep it regardless
+            if len(streams) == 1:
+                logger.info("[*] Only one audio track found. Skipping filter.")
+                return
+
+            hindi_idx = None
+            # Search for Hindi track via language tag or title
+            for s in streams:
+                tags = s.get("tags", {})
+                lang = str(tags.get("language", "")).lower()
+                title = str(tags.get("title", "")).lower()
+                if lang in ["hi", "hin", "hindi"] or "hindi" in title:
+                    hindi_idx = s.get("index")
+                    break
+            
+            if hindi_idx is None:
+                logger.info("[*] Hindi audio track NOT found via tags. Keeping all tracks to avoid accidental loss.")
+                return
+
+            # 2. Extract only Video (0:v), Selected Audio (0:hindi_idx), and Subtitles (0:s?)
+            if status: await Utils.safe_edit(status, "✂️ **Stripping Non-Hindi Audio Tracks...**", force=True)
+            out_path = fpath + ".hin.mp4"
+            # Map video, the specific audio index, and subtitles (optional)
+            cmd = ["ffmpeg", "-y", "-i", fpath, "-map", "0:v", "-map", f"0:{hindi_idx}", "-map", "0:s?", "-c", "copy", "-movflags", "+faststart", out_path]
+            proc = await asyncio.create_subprocess_exec(*cmd)
+            await proc.wait()
+            
+            if proc.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
+                os.replace(out_path, fpath)
+                logger.info(f"[+] Successfully filtered Hindi audio for {fpath}")
+            else:
+                if os.path.exists(out_path): os.remove(out_path)
+                logger.warning("[!] ffmpeg audio filtering failed. Using original file.")
+        except Exception as e:
+            logger.error(f"[!] Error in _filter_hindi_audio: {e}")
 
     async def _warmup_mirror(self, url, ua, cookies):
         try:

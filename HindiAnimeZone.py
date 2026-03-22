@@ -65,6 +65,14 @@ class HindiAnimeZone:
             for ep_div in episodes:
                 ep_name = self._extract_ep_name(ep_div, page_title)
                 if 'how to download' in ep_name.lower(): continue
+                
+                # Language filtering: only Hindi or Multi-audio
+                lang_tag = ep_div.select_one('.language')
+                lang_text = lang_tag.get_text(strip=True).lower() if lang_tag else ""
+                if not any(x in lang_text for x in ['hindi', 'multi', 'dual']):
+                    # Fallback check on ep_name or page_title
+                    if not any(x in ep_name.lower() or x in page_title.lower() for x in ['hindi', 'multi', 'dual']):
+                        continue
                     
                 quality_map = self._get_quality_links(ep_div, seen_hrefs)
                 if not quality_map: continue
