@@ -967,25 +967,26 @@ class AnimeBot:
                 s.headers.update(headers)
                 if cookies: s.cookies.update(cookies)
                 
-                with s.get(url, stream=True, timeout=30, verify=False) as r:
-                    r.raise_for_status()
-                    total = int(r.headers.get('content-length', 0))
-                    curr = 0
-                    last_up = 0
-                    start_t = time.time()
-                    with open(path, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=1 * 1024 * 1024):
-                            if chunk:
-                                f.write(chunk)
-                                curr += len(chunk)
-                                if time.time() - last_up > Config.PROGRESS_UPDATE_INTERVAL:
-                                    p = curr * 100 / total if total else 0
-                                    fname = os.path.basename(path)
-                                    speed = curr / (time.time() - start_t) if (time.time() - start_t) > 0 else 0
-                                    
-                                    msg = Utils.format_progress(fname, "⏬", "Downloading (Fallback)", p, speed, curr, total, start_t)
-                                    await Utils.safe_edit(status, msg)
-                                    last_up = time.time()
+                # In curl_cffi, responses are not necessarily context managers
+                r = s.get(url, stream=True, timeout=30, verify=False)
+                r.raise_for_status()
+                total = int(r.headers.get('content-length', 0))
+                curr = 0
+                last_up = 0
+                start_t = time.time()
+                with open(path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=1 * 1024 * 1024):
+                        if chunk:
+                            f.write(chunk)
+                            curr += len(chunk)
+                            if time.time() - last_up > Config.PROGRESS_UPDATE_INTERVAL:
+                                p = curr * 100 / total if total else 0
+                                fname = os.path.basename(path)
+                                speed = curr / (time.time() - start_t) if (time.time() - start_t) > 0 else 0
+                                
+                                msg = Utils.format_progress(fname, "⏬", "Downloading (Fallback)", p, speed, curr, total, start_t)
+                                await Utils.safe_edit(status, msg)
+                                last_up = time.time()
             return os.path.exists(path) and os.path.getsize(path) > 1000
         except Exception as e:
             logger.error(f"[!] curl_cffi fallback failed: {e}")
