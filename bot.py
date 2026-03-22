@@ -49,6 +49,10 @@ class Config:
     HUB_MAX_WORKERS = 5
     MIRROR_MAX_WORKERS = 8
 
+    # Metadata & Caption Customization
+    METADATA_KEY = "[ @SyntaxRealm ]"
+    CREDIT_TEXT = "This video encoded by: [ @SyntaxRealm ]\nUse Bot: [ @SyntaxRealm ]"
+
 # --- LOGGING SETUP ---
 logging.basicConfig(
     level=logging.INFO,
@@ -1037,7 +1041,14 @@ class AnimeBot:
         split_files = []
         for i in range(parts):
             out = f"{path}.part{i+1}.mp4"
-            cmd = ["ffmpeg", "-v", "error", "-i", path, "-ss", str(i*part_dur), "-t", str(part_dur), "-c", "copy", "-movflags", "+faststart", out, "-y"]
+            # Injecting MediaInfo credits during split
+            cmd = [
+                "ffmpeg", "-v", "error", "-i", path, "-ss", str(i*part_dur), "-t", str(part_dur), 
+                "-map", "0", "-c", "copy", "-movflags", "+faststart", 
+                "-metadata", f"Credit={Config.CREDIT_TEXT}",
+                "-metadata", f"comment={Config.CREDIT_TEXT}",
+                out, "-y"
+            ]
             proc = await asyncio.create_subprocess_exec(*cmd)
             await proc.wait()
             if os.path.exists(out): split_files.append(out)
@@ -1203,8 +1214,16 @@ class AnimeBot:
             out_path = fpath + ".hin" + ext
             
             # Map video and specific audio. DO NOT MAP 0:s (subtitles) as per user request.
-            # Removed -movflags +faststart as it's for MP4 and can cause duration issues in other containers
-            cmd = ["ffmpeg", "-y", "-i", fpath, "-map", "0:v", "-map", f"0:{hindi_idx}", "-c", "copy", "-map_metadata", "0", out_path]
+            # Inject metadata from Config
+            title_meta = f"{os.path.basename(fpath)} {Config.METADATA_KEY}"
+            cmd = [
+                "ffmpeg", "-y", "-i", fpath, 
+                "-map", "0:v", "-map", f"0:{hindi_idx}", 
+                "-metadata", f"title={title_meta}",
+                "-metadata", f"comment={Config.METADATA_KEY}",
+                "-metadata", f"artist={Config.METADATA_KEY}",
+                "-c", "copy", "-map_metadata", "0", out_path
+            ]
             proc = await asyncio.create_subprocess_exec(*cmd)
             await proc.wait()
             
