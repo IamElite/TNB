@@ -86,7 +86,8 @@ class HindiAnimeZone:
                             episode_entry["downloads"].append({
                                 "label": data['label'],
                                 "link": final_link,
-                                "server": srv
+                                "server": srv,
+                                "metadata": self._get_metadata()
                             })
                 
                 if episode_entry["downloads"]:
@@ -135,7 +136,7 @@ class HindiAnimeZone:
             for sname, surl in links.items(): 
                 final = self.get_final_link(sname, surl)
                 if final:
-                    downloads.append({"label": "Direct Link", "link": final, "server": sname})
+                    downloads.append({"label": "Direct Link", "link": final, "server": sname, "metadata": self._get_metadata()})
         
         return [{"episode": "Direct Download", "downloads": downloads}] if downloads else []
 
@@ -176,25 +177,33 @@ class HindiAnimeZone:
         if res: logger.info(f"Final DL ({srv_name}): {res}")
         return res
 
+    def _get_metadata(self) -> Dict[str, Any]:
+        return {
+            "cookies": self.session.cookies.get_dict(),
+            "user_agent": self.session.headers.get('User-Agent')
+        }
+
     def _bypass_gdshare(self, url: str) -> Optional[str]:
         try:
-            # Using fresh session for clean tokens if needed
-            s = requests.Session()
-            r = s.get(url, headers={"User-Agent": self.USER_AGENTS[0]})
-            csrf = re.search(r"CSRF_TOKEN\s*=\s*['\"]([^'\"]+)", r.text).group(1)
+            # Using main session for unified tokens
+            r = self.session.get(url, timeout=15)
+            csrf_match = re.search(r"CSRF_TOKEN\s*=\s*['\"]([^'\"]+)", r.text)
+            if not csrf_match: return None
+            csrf = csrf_match.group(1)
             
             h = {"X-Requested-With": "XMLHttpRequest", "X-CSRF-Token": csrf, "Referer": r.url}
-            data = s.get(r.url, headers=h, timeout=10).json()
+            data = self.session.get(r.url, headers=h, timeout=10).json()
             token = data["data"]["access_token"]
             
-            j = s.get(f"{r.url}&get_secure_links=1&access_token={token}", headers=h, timeout=10).json()
+            j = self.session.get(f"{r.url}&get_secure_links=1&access_token={token}", headers=h, timeout=10).json()
             inst = f"https://gcloud.sbs/instant/{j['gphotos_id']}/{j['gp_id']}"
             
-            r2 = s.get(inst, headers=h)
-            csrf2 = re.search(r"CSRF_TOKEN\s*=\s*['\"]([^'\"]+)", r2.text).group(1)
-            h["X-CSRF-Token"] = csrf2
+            r2 = self.session.get(inst, headers=h)
+            csrf2_match = re.search(r"CSRF_TOKEN\s*=\s*['\"]([^'\"]+)", r2.text)
+            if csrf2_match:
+                h["X-CSRF-Token"] = csrf2_match.group(1)
             
-            return s.get(f"{inst}?ajax=1", headers=h).json().get("download_url")
+            return self.session.get(f"{inst}?ajax=1", headers=h).json().get("download_url")
         except: return None
 
     def _bypass_filepress(self, url: str) -> Optional[str]:
@@ -265,6 +274,6 @@ class HindiAnimeZone:
             for sname, surl in links.items(): 
                 final = self.get_final_link(sname, surl)
                 if final:
-                    downloads.append({"label": data['label'], "link": final, "server": sname})
+                    downloads.append({"label": data['label'], "link": final, "server": sname, "metadata": self._get_metadata()})
         
         return [{"episode": "Content", "downloads": downloads}] if downloads else []
