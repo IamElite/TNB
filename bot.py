@@ -839,6 +839,13 @@ class AnimeBot:
             req_dir = os.path.join(Config.DOWNLOAD_DIR, str(m.id))
             if not os.path.exists(req_dir): os.makedirs(req_dir)
 
+            # Deduplicate mirrors: only one link per quality label
+            unique_dl = {}
+            for dl in downloads:
+                label = dl.get('label', 'N/A')
+                if label not in unique_dl: unique_dl[label] = dl
+            downloads = list(unique_dl.values())
+
             for dl in downloads:
                 url, meta, label = dl['link'], dl.get('metadata', {}), dl.get('label', 'N/A')
                 logger.info(f"[*] Processing Quality: {label} | URL: {url[:60]}...")
@@ -1182,7 +1189,9 @@ class AnimeBot:
 
             # 2. Extract only Video (0:v), Selected Audio (0:hindi_idx), and Subtitles (0:s?)
             if status: await Utils.safe_edit(status, "✂️ **Stripping Non-Hindi Audio Tracks...**", force=True)
-            out_path = fpath + ".hin.mp4"
+            # Use original extension to avoid container errors (e.g. MKV to MP4 with ASS subs fails)
+            ext = os.path.splitext(fpath)[1] or ".mp4"
+            out_path = fpath + ".hin" + ext
             # Map video, the specific audio index, and subtitles (optional)
             cmd = ["ffmpeg", "-y", "-i", fpath, "-map", "0:v", "-map", f"0:{hindi_idx}", "-map", "0:s?", "-c", "copy", "-movflags", "+faststart", out_path]
             proc = await asyncio.create_subprocess_exec(*cmd)
