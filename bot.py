@@ -936,7 +936,9 @@ class AnimeBot:
                 logger.info(f"[*] Processing Quality: {label} | URL: {url[:60]}...")
                 
                 await Utils.safe_edit(status, f"🔍 **Resolving {label}...**", force=True)
-                fname = await asyncio.to_thread(bypasser.resolve_filename, url, meta.get('referer'), meta.get('cookies'))
+                fname = None
+                if hasattr(bypasser, 'resolve_filename'):
+                    fname = await asyncio.to_thread(bypasser.resolve_filename, url, meta.get('referer'), meta.get('cookies'))
                 
                 if not fname or len(fname) < 5:
                     # Detect season for filename

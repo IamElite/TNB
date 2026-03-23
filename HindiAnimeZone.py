@@ -126,6 +126,10 @@ class HindiAnimeZone:
         tasks = [self.resolve_episode(ep) for ep in ep_list]
         return await asyncio.gather(*tasks)
 
+    def resolve_filename(self, url: str, referer: Optional[str] = None, cookies: Optional[Dict] = None) -> Optional[str]:
+        """Placeholder to satisfy the bypasser interface in bot.py."""
+        return None
+
     def _extract_ep_name(self, ep_div: BeautifulSoup, fallback: str) -> str:
         tag = ep_div.select_one('.episode-title')
         if tag: return tag.get_text(strip=True)
