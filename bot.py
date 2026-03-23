@@ -49,6 +49,9 @@ class Config:
     # Concurrency Constants
     HUB_MAX_WORKERS = 5
     MIRROR_MAX_WORKERS = 8
+    
+    # Storage Management in sec
+    FILE_DELETE_DELAY = 5
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -917,11 +920,13 @@ class AnimeBot:
                     paths = await self._split_video(fpath, status)
                     for p in paths:
                         await self._upload_file(m, p, status, current, total, label, series_info)
-                        if os.path.exists(p): os.remove(p)
+                        # Deletion with 5s delay as requested by user
+                        asyncio.create_task(self._delayed_delete(p))
                 else:
                     logger.error(f"[!] Download failed for {label}")
                 
-                if os.path.exists(fpath): os.remove(fpath)
+                # Cleanup original file after processing
+                asyncio.create_task(self._delayed_delete(fpath))
         except Exception as e:
             logger.error(f"[CRITICAL] Crash in _process_episode: {e}")
             logger.error(traceback.format_exc())
@@ -1182,6 +1187,19 @@ class AnimeBot:
         noise = r'Dubbed|Hindi|Dual|Audio|Multi|Episodes?|Downloads?|Full|Series|Zon-E|HD|BluRay|FHD|SD'
         cleaned = re.sub(noise, '', text, flags=re.I).replace('.', ' ').replace('_', ' ')
         return re.sub(r'\s+', ' ', cleaned).strip()
+
+    async def _delayed_delete(self, path: str):
+        """Asynchronously deletes a file after a delay to prevent disk bloat."""
+        if not path or not os.path.exists(path): return
+        delay = Config.FILE_DELETE_DELAY
+        logger.info(f"[*] Cleanup scheduled for {os.path.basename(path)} in {delay}s")
+        await asyncio.sleep(delay)
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+                logger.info(f"[+] Storage cleaned: {os.path.basename(path)}")
+        except Exception as e:
+            logger.error(f"Cleanup Error ({os.path.basename(path)}): {e}")
 
     def _q_val(self, label):
         m = re.search(r'(\d+)', str(label))
