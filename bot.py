@@ -869,6 +869,7 @@ class AnimeBot:
                         se_str = ""
                         
                     fname = f"{cleaned_name} {se_str} {ep_str} [{label.upper()}].mp4"
+                    fname = self._clean_filename(fname)
                     fname = re.sub(r'\s+', ' ', fname).strip()
                 
                 fpath = os.path.join(req_dir, re.sub(r'[\\/*?:"<>|]', "", fname).strip())
@@ -1055,6 +1056,9 @@ class AnimeBot:
             if s_match: season = (s_match.group(1) or s_match.group(2)).zfill(2)
             
         # Clean title for caption (Remove Season info and unwanted suffixes)
+        # 1. Remove bracketed/parentheses content FIRST (e.g. [-Jap], [Hindi])
+        name = re.sub(r'\(.*?\)|\[.*?\]', '', name)
+        # 2. Aggressive noise cleaning
         name = self._clean_title(name)
         
         q = re.search(r'(\d{3,4}p)', path, re.I)
@@ -1087,9 +1091,27 @@ class AnimeBot:
 
     def _clean_title(self, text):
         # Strips EVERYTHING including Seasons for the 🎬 Title line
-        noise = r'Dubbed|Hindi|Dual|Audio|Multi|Episodes?|Downloads?|Full|Series|Zon-E|HD|BluRay|FHD|SD|Season\s*\d+|S\d+'
+        # Added quality and group tags for cleaner titles
+        noise = r'Dubbed|Hindi|Dual|Audio|Multi|Episodes?|Downloads?|Full|Series|Zon-E|HD|BluRay|FHD|SD|Season\s*\d+|S\d+|WEB-DL|HEVC|x264|x265|10bit|ESub|Fan|Softsubs|Subbed|Rip|HDTV|AAC|DDP|AVC'
         cleaned = re.sub(noise, '', text, flags=re.I).replace('.', ' ').replace('_', ' ')
         return re.sub(r'\s+', ' ', cleaned).strip()
+
+    def _clean_filename(self, text):
+        # User requested specific patterns to remove from filenames (RTI, Toono, HindiAnimeZone)
+        patterns = [
+            r'\[RTI\]', r'\[RareToonsIndia\]', r'RareToonsIndia',
+            r'\[Toono\]', r'\[toono\]', r'Toono\.in', r'toono\.in', r'Toono', r'toono',
+            r'\[HindiAnimeZone\.com\]', r'\[ HindiAnimeZone\.com \]', r'HindiAnimeZone\.com'
+        ]
+        res = text
+        for p in patterns:
+            res = re.sub(p, '', res, flags=re.I)
+        
+        # Clean up extra characters
+        res = re.sub(r'_+', ' ', res)
+        res = re.sub(r'\[\s*\]', '', res)
+        res = re.sub(r'\s+', ' ', res)
+        return res.strip('_ ')
 
     def _clean_noise(self, text):
         # Preserves Season so it stays in Filenames
