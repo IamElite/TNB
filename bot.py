@@ -42,8 +42,8 @@ class Config:
     MAX_FILE_SIZE = 2000 * 1024 * 1024 # 2GB for Telegram
     
     # Speed Optimization Constants
-    MAX_DOWNLOAD_WORKERS = 15
-    MAX_UPLOAD_PARALLEL = 15
+    MAX_DOWNLOAD_WORKERS = 20 
+    MAX_UPLOAD_PARALLEL = 20
     PROGRESS_UPDATE_INTERVAL = 5
     
     # Concurrency Constants
@@ -767,10 +767,14 @@ class AnimeBot:
             url, selection = m.command[1], self._parse_selection(m.command[2:])
             status = await m.reply("🔍 **Analyzing...**")
             try:
-                if "rareanimes.app" in url or "codedew.com" in url: await self._handle_rareanimes(m, url, selection, status)
-                elif "hindianimezone.com" in url: await self._handle_hindianime(m, url, selection, status)
-                else: await status.edit("❌ Unsupported site.")
-            except Exception as e: await Utils.safe_edit(status, f"❌ Error: {str(e)}", force=True)
+                site = "rareanimes" if ("rareanimes.app" in url or "codedew.com" in url) else "hindianimezone" if ("hindianimezone.com" in url) else None
+                if site:
+                    await self._handle_anime_site(m, url, selection, status, site)
+                else:
+                    await status.edit("❌ Unsupported site.")
+            except Exception as e:
+                logger.error(f"Grab Error: {e}", exc_info=True)
+                await Utils.safe_edit(status, f"❌ Error: {str(e)}", force=True)
 
     def _is_auth(self, m: Message) -> bool:
         return (m.from_user.id if m.from_user else 0) == Config.OWNER_ID or m.chat.id == Config.AUTH_CHAT
@@ -787,48 +791,39 @@ class AnimeBot:
             elif a.isdigit(): nums.add(int(a))
         return sorted(list(nums)) if nums else None
 
-    async def _handle_rareanimes(self, m, url, selection, status):
-        ep_start = min(selection) if selection else None
-        ep_end = max(selection) if selection else None
-        
-        bypasser = RareAnimes()
-        res = await asyncio.to_thread(bypasser.get_links, url, ep_start, ep_end)
-        
-        if "error" in res:
-            return await Utils.safe_edit(status, f"❌ Error: {res['error']}", force=True)
-            
-        episodes = res.get("episodes", [])
+    async def _handle_anime_site(self, m, url, selection, status, site):
+        if site == "rareanimes":
+            ep_start = min(selection) if selection else None
+            ep_end = max(selection) if selection else None
+            bypasser = RareAnimes()
+            res = await asyncio.to_thread(bypasser.get_links, url, ep_start, ep_end)
+            if "error" in res:
+                return await Utils.safe_edit(status, f"❌ Error: {res['error']}", force=True)
+            episodes = res.get("episodes", [])
+            series_info = res.get("series_info")
+        else: # hindianimezone
+            episodes = await asyncio.to_thread(HindiAnimeZone().pro_main_bypass, url, selection=selection)
+            if not episodes:
+                return await Utils.safe_edit(status, "❌ No episodes found.", force=True)
+            bypasser = RareAnimes() # Uses shared resolver
+            series_info = episodes[0].get("series_info") if episodes else None
+
         if not episodes:
-            return await Utils.safe_edit(status, "❌ No episodes found. (Bypass failed or No Links)", force=True)
-            
-        await Utils.safe_edit(status, f"✅ Found {len(episodes)} episodes. Starting concurrent batch processing...")
-        await self._process_all_episodes_concurrently(m, episodes, bypasser, res.get("series_info"))
+            return await Utils.safe_edit(status, "❌ No episodes to process.", force=True)
+
+        await Utils.safe_edit(status, f"✅ Found {len(episodes)} episodes. Processing sequentially...", force=True)
+        await self._process_episodes(m, episodes, bypasser, series_info)
         await status.delete()
 
-    async def _handle_hindianime(self, m, url, selection, status):
-        eps = await asyncio.to_thread(HindiAnimeZone().pro_main_bypass, url, selection=selection)
-        if not eps: return await Utils.safe_edit(status, "❌ No episodes found.", force=True)
-        # Create a dummy bypasser for consistency if needed, though HindiAnimeZone handles its own session
-        bypasser = RareAnimes()
-        await Utils.safe_edit(status, f"✅ Found {len(eps)} episodes. Starting concurrent batch processing...")
-        await self._process_all_episodes_concurrently(m, eps, bypasser, eps[0].get("series_info") if eps else None)
-        await status.delete()
-
-    async def _process_all_episodes_concurrently(self, m, episodes, bypasser, series_info):
-        sem = asyncio.Semaphore(Config.MAX_DOWNLOAD_WORKERS)
-        
-        async def process_task(i, ep):
-            async with sem:
-                ep_status = await m.reply(f"⏳ **Queued Episode {i}/{len(episodes)}...**")
-                try:
-                    await self._process_episode(m, ep, bypasser, ep_status, len(episodes), i, series_info)
-                finally:
-                    try: await ep_status.delete()
-                    except: pass
-                    
-        tasks = [process_task(i, ep) for i, ep in enumerate(episodes, 1)]
-        if tasks:
-            await asyncio.gather(*tasks)
+    async def _process_episodes(self, m, episodes, bypasser, series_info):
+        # Sequential processing using Semaphore(1) or direct loop
+        for i, ep in enumerate(episodes, 1):
+            ep_status = await m.reply(f"⏳ **Queued Episode {i}/{len(episodes)}...**")
+            try:
+                await self._process_episode(m, ep, bypasser, ep_status, len(episodes), i, series_info)
+            finally:
+                try: await ep_status.delete()
+                except: pass
 
     async def _process_episode(self, m, ep, bypasser, status, total, current, series_info):
         try:
