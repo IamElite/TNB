@@ -864,100 +864,104 @@ class AnimeBot:
             return await Utils.safe_edit(status, "❌ No episodes to process.", force=True)
 
         q_msg = f" (Quality: {pref_quality})" if pref_quality else ""
-        await Utils.safe_edit(status, f"✅ Found {len(episodes)} episodes{q_msg}. JIT Processing active...", force=True)
+        await Utils.safe_edit(status, f"✅ Found {len(episodes)} episodes{q_msg}. Ultra-High Speed active...", force=True)
         await self._process_episodes(m, episodes, bypasser, series_info, pref_quality)
         await status.delete()
 
     async def _process_episodes(self, m, episodes, bypasser, series_info, pref_quality=None):
-        # lookahead task to pre-resolve the next episode
-        next_res_task = None
+        # Pipeline orchestrator: Overlaps Upload of Episode N with Download/Prep of Episode N+1
+        prep_task = None
         
-        async def safe_resolve(ep):
+        async def safe_resolve_and_prep(index, ep):
             try:
+                # 1. Resolve
                 if hasattr(bypasser, 'resolve_episode'):
-                    # Reuse session if possible or create one
                     if isinstance(bypasser, HindiAnimeZone):
                         haz = HindiAnimeZone()
-                        try: return await haz.resolve_episode(ep)
+                        try: ep = await haz.resolve_episode(ep)
                         finally: await haz.close()
-                    return await bypasser.resolve_episode(ep)
-                return ep
+                    else:
+                        ep = await bypasser.resolve_episode(ep)
+                
+                # 2. Prepare (Download, Filter, Split)
+                ep_status = await m.reply(f"⏬ **Preparing Episode {index+1}/{len(episodes)}...**")
+                try:
+                    paths, ep_series_info = await self._prepare_episode(m, ep, bypasser, ep_status, len(episodes), index+1, series_info, pref_quality)
+                    return paths, ep_series_info
+                finally:
+                    try: await ep_status.delete()
+                    except: pass
             except Exception as e:
-                logger.error(f"Resolve Error: {e}")
-                return ep
+                logger.error(f"Prep Error for Ep {index+1}: {e}")
+                return None, None
 
-        for i, ep in enumerate(episodes):
-            ep_status = await m.reply(f"⏳ **Resolving Episode {i+1}/{len(episodes)}...**")
+        # Start prep for the first episode
+        prep_task = asyncio.create_task(safe_resolve_and_prep(0, episodes[0]))
+
+        for i in range(len(episodes)):
+            # Wait for current episode to be ready
+            paths, ep_series_info = await prep_task
             
-            # 1. Resolve Current Episode
-            if i == 0:
-                # First one needs resolution now
-                ep = await safe_resolve(ep)
-            else:
-                # Wait for pre-resolution task from previous iteration
-                if next_res_task:
-                    ep = await next_res_task
-                else:
-                    ep = await safe_resolve(ep)
-            
-            # 2. Start pre-resolving NEXT episode in background
-            next_res_task = None
+            # Start prep for NEXT episode in background if disk allows
+            prep_task = None
             if i + 1 < len(episodes):
-                next_res_task = asyncio.create_task(safe_resolve(episodes[i+1]))
+                if self._has_enough_disk():
+                    logger.info(f"[*] Disk Space OK. Pre-downloading Episode {i+2}...")
+                    prep_task = asyncio.create_task(safe_resolve_and_prep(i+1, episodes[i+1]))
+                else:
+                    logger.warning("[!] Low disk space. Skipping pre-download.")
 
-            # 3. Process current episode
-            try:
-                await ep_status.edit(f"🚀 **Processing Episode {i+1}/{len(episodes)}...**")
-                await self._process_episode(m, ep, bypasser, ep_status, len(episodes), i+1, series_info, pref_quality)
-            finally:
-                try: await ep_status.delete()
-                except: pass
-        
+            # Upload current episode
+            if paths:
+                up_status = await m.reply(f"📤 **Uploading Episode {i+1}/{len(episodes)}...**")
+                try:
+                    await self._upload_episode(m, paths, up_status, len(episodes), i+1, ep_series_info)
+                finally:
+                    try: await up_status.delete()
+                    except: pass
+            
+            # If next prep was skipped due to disk, start it now (blocking)
+            if i + 1 < len(episodes) and prep_task is None:
+                prep_task = asyncio.create_task(safe_resolve_and_prep(i+1, episodes[i+1]))
+
         if hasattr(bypasser, 'close'):
             await bypasser.close()
 
-    async def _process_episode(self, m, ep, bypasser, status, total, current, series_info, pref_quality=None):
+    def _has_enough_disk(self):
         try:
-            downloads = sorted(ep.get("downloads", []), key=lambda x: self._q_val(x.get('label')))
-            logger.info(f"[*] Episode {current}/{total} has {len(downloads)} download links.")
-            
-            # Quality Filtering
-            if pref_quality:
-                downloads = [d for d in downloads if pref_quality.lower() in str(d.get('label', '')).lower()]
-                if not downloads:
-                    logger.warning(f"[!] No matching quality '{pref_quality}' for EP {current}. Skipping.")
-                    return
+            usage = psutil.disk_usage(Config.DOWNLOAD_DIR)
+            return usage.free > (1.5 * 1024 * 1024 * 1024) # 1.5GB safety margin
+        except: return True
 
-            if not downloads:
-                logger.warning(f"[!] No valid download links for episode: {ep.get('episode') or 'Unknown'}. Skipping.")
-                return
+    async def _prepare_episode(self, m, ep, bypasser, status, total, current, series_info, pref_quality=None):
+        """Resolves, downloads, filters, and splits an episode. Returns (list_of_paths, series_info)."""
+        try:
+            downloads = ep.get('downloads')
+            if not downloads: return None, None
+            
+            if pref_quality:
+                downloads = [d for d in downloads if pref_quality.lower() in d.get('label', '').lower()]
+            
+            if not downloads: return None, None
+            
             req_dir = os.path.join(Config.DOWNLOAD_DIR, str(m.id))
             if not os.path.exists(req_dir): os.makedirs(req_dir)
 
-            # Deduplicate mirrors: only one link per quality label
             unique_dl = {}
             for dl in downloads:
                 label = dl.get('label', 'N/A')
                 if label not in unique_dl: unique_dl[label] = dl
-            downloads = list(unique_dl.values())
-
-            for dl in downloads:
+            
+            final_paths = []
+            for dl in unique_dl.values():
                 url, meta, label = dl['link'], dl.get('metadata', {}), dl.get('label', 'N/A')
-                logger.info(f"[*] Processing Quality: {label} | URL: {url[:60]}...")
-                
-                await Utils.safe_edit(status, f"🔍 **Resolving {label}...**", force=True)
                 fname = await asyncio.to_thread(Utils.resolve_filename, url, meta.get('referer'), meta.get('cookies'))
-                
-                # Smart cleanup for resolved filename
-                if fname and len(fname) > 5:
-                    fname = self._clean_filename(fname)
+                if fname: fname = self._clean_filename(fname)
                 
                 if not fname or len(fname) < 5:
-                    # Detect season for filename
                     if isinstance(series_info, dict):
-                        season_val = series_info.get('season')
-                        se_str = f"S{str(season_val).zfill(2)}" if season_val else ""
                         base_name = series_info.get('name', 'Anime')
+                        se_str = f"S{str(series_info.get('season')).zfill(2)}" if series_info.get('season') else ""
                     else:
                         s = re.search(r'S(\d+)|Season\s*(\d+)', series_info or "", re.I)
                         se_str = f"S{(s.group(1) or s.group(2)).zfill(2)}" if s else ""
@@ -965,38 +969,26 @@ class AnimeBot:
                     
                     ep_num = re.search(r'(\d+)', ep.get('episode', ''))
                     ep_str = f"E{ep_num.group(1).zfill(2)}" if ep_num else f"E{str(current).zfill(2)}"
-                    
-                    cleaned_name = self._clean_noise(base_name)
-                    # If se_str is already in cleaned_name, don't repeat
-                    if se_str and (se_str in cleaned_name.upper() or f"SEASON {int(se_str[1:])}" in cleaned_name.upper()):
-                        se_str = ""
-                        
-                    fname = f"{cleaned_name} {se_str} {ep_str} [{label.upper()}].mp4"
-                    fname = self._clean_filename(fname)
-                    fname = re.sub(r'\s+', ' ', fname).strip()
+                    fname = f"{self._clean_noise(base_name)} {se_str} {ep_str} [{label.upper()}].mp4"
                 
                 fpath = os.path.join(req_dir, re.sub(r'[\\/*?:"<>|]', "", fname).strip())
-                logger.info(f"[*] Target File: {fpath}")
-                
-                await Utils.safe_edit(status, f"🚀 **Downloading {label}**...", force=True)
                 if await self._download_manager(url, fpath, status, meta):
-                    # Filter Hindi Audio (keep only Hindi track)
                     await self._filter_hindi_audio(fpath, status)
-                    # Faststart & Split if necessary
                     paths = await self._split_video(fpath, status)
-                    for p in paths:
-                        await self._upload_file(m, p, status, current, total, label, series_info)
-                        # Deletion with 5s delay as requested by user
-                        asyncio.create_task(self._delayed_delete(p))
-                else:
-                    logger.error(f"[!] Download failed for {label}")
-                
-                # Cleanup original file after processing
-                asyncio.create_task(self._delayed_delete(fpath))
+                    final_paths.extend(paths)
+                    if fpath not in final_paths:
+                         asyncio.create_task(self._delayed_delete(fpath))
+            
+            return final_paths, series_info
         except Exception as e:
-            logger.error(f"[CRITICAL] Crash in _process_episode: {e}")
-            logger.error(traceback.format_exc())
-            await Utils.safe_edit(status, f"❌ Error processing episode: {str(e)}", force=True)
+            logger.error(f"Prepare Episode Error: {e}")
+            return None, None
+
+    async def _upload_episode(self, m, paths, status, total, current, series_info):
+        """Uploads paths and schedules deletion."""
+        for p in paths:
+            await self._upload_file(m, p, status, current, total, os.path.basename(p), series_info)
+            asyncio.create_task(self._delayed_delete(p))
 
     async def _download_manager(self, url, path, status, meta):
         ua, cookies = meta.get('user_agent', Config.DEFAULT_UA), meta.get('cookies', {})
