@@ -7,6 +7,10 @@ from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
 import requests
 from requests import Session
+try:
+    from curl_cffi import requests as currequests
+except ImportError:
+    currequests = None
 
 # --- LOGGING ---
 logger = logging.getLogger("HindiAnimeZone")
@@ -25,9 +29,13 @@ class HindiAnimeZone:
     ]
 
     def __init__(self):
-        self.session = Session()
+        if currequests:
+            self.session = currequests.Session(impersonate="chrome124")
+        else:
+            self.session = Session()
+            self.session.headers.update({'User-Agent': random.choice(self.USER_AGENTS)})
+            
         self.session.headers.update({
-            'User-Agent': random.choice(self.USER_AGENTS),
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
             'Referer': self.BASE_URL
