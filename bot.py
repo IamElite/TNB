@@ -549,22 +549,32 @@ class RareAnimes:
             logger.error(f"[!] Critical error in process_multiquality: {e}")
         return None
 
-    def resolve_filename(self, url: str, referer: Optional[str] = None, cookies: Optional[Dict] = None) -> Optional[str]:
-        if any(x in url.lower() for x in ["swift", "multiquality", "leech"]): return None
-        try:
-            headers = {"Referer": referer or self.ROOT_URL, "User-Agent": self.UA}
-            res = py_requests.head(url, headers=headers, cookies=cookies, allow_redirects=True, timeout=10, verify=False)
-            cd = res.headers.get("Content-Disposition", "")
-            m = re.search(r'filename\*=utf-8\'\'(.+)|filename="(.+)"|filename=(.+)', cd, re.I)
-            if m: return unquote(m.group(1) or m.group(2) or m.group(3))
-            return os.path.basename(urlparse(res.url).path)
-        except: return None
+    # resolve_filename moved to Utils class
 
 # --- UTILITIES ---
 class Utils:
     EDIT_STATES: Dict[int, Dict[str, Any]] = {}
     _NET_IO = None
     _NET_TIME = None
+
+    @staticmethod
+    def resolve_filename(url: str, referer: Optional[str] = None, cookies: Optional[Dict] = None) -> Optional[str]:
+        if any(x in url.lower() for x in ["swift", "multiquality", "leech"]): return None
+        try:
+            headers = {"Referer": referer, "User-Agent": Config.DEFAULT_UA}
+            res = py_requests.head(url, headers=headers, cookies=cookies, allow_redirects=True, timeout=10, verify=False)
+            cd = res.headers.get("Content-Disposition", "")
+            # Enhanced regex for various filename formats
+            m = re.search(r'filename\*=utf-8\'\'(.+)|filename="(.+)"|filename=([^;\s]+)', cd, re.I)
+            if m: 
+                name = unquote(m.group(1) or m.group(2) or m.group(3))
+                return name.strip(' "\'')
+            
+            # Fallback to URL path
+            path = urlparse(res.url).path
+            return os.path.basename(path)
+        except: 
+            return None
 
     @staticmethod
     def progress_bar(p, l=15):
@@ -936,9 +946,11 @@ class AnimeBot:
                 logger.info(f"[*] Processing Quality: {label} | URL: {url[:60]}...")
                 
                 await Utils.safe_edit(status, f"🔍 **Resolving {label}...**", force=True)
-                fname = None
-                if hasattr(bypasser, 'resolve_filename'):
-                    fname = await asyncio.to_thread(bypasser.resolve_filename, url, meta.get('referer'), meta.get('cookies'))
+                fname = await asyncio.to_thread(Utils.resolve_filename, url, meta.get('referer'), meta.get('cookies'))
+                
+                # Smart cleanup for resolved filename
+                if fname and len(fname) > 5:
+                    fname = self._clean_filename(fname)
                 
                 if not fname or len(fname) < 5:
                     # Detect season for filename
@@ -1219,11 +1231,13 @@ class AnimeBot:
 
     def _clean_filename(self, text):
         # Smarter regex for site branding removal (HindiAnimeZone, RTI, Toono, etc.)
+        # Catches variations like HindiAnimeZone.com, HindiAnimeZone_in, HindiAnimeZone.in, etc.
         patterns = [
-            r'HindiAnimeZone[\._\-]?(?:in|com|net|org|xyz|cc|to|site)?',
-            r'RareToonsIndia(?:[\._\-\s]?(?:com|in|net|org|xyz))?',
-            r'Toono(?:[\._\-\s]?(?:in|com|net|org|xyz))?',
-            r'\[RTI\]', r'\[Zon-E\]', r'Zon-E', r'\[Toono\]', r'Toono\.in', r'toono\.in'
+            r'HindiAnimeZone(?:[\._\-\s]?(?:com|in|net|org|xyz|cc|to|site))?[\._\-\s]?',
+            r'RareToonsIndia(?:[\._\-\s]?(?:com|in|net|org|xyz))?[\._\-\s]?',
+            r'Toono(?:[\._\-\s]?(?:in|com|net|org|xyz))?[\._\-\s]?',
+            r'_in_', r'_com_', r'\.in', r'\.com',
+            r'\[RTI\]', r'\[Zon-E\]', r'Zon-E', r'\[Toono\]', r'\[RMB\]'
         ]
         res = text
         for p in patterns:
@@ -1236,13 +1250,10 @@ class AnimeBot:
         return res.strip()
 
     def _clean_noise(self, text):
-        # First remove branding/domains
-        text = self._clean_filename(text)
-        # Then common video tags (Preserve Season/Episode if they are part of base_name)
-        noise = r'Dubbed|Hindi|Dual|Audio|Multi|Episodes?|Downloads?|Full|Series|Zon-E|HD|BluRay|FHD|SD|WEB-DL|HEVC|x264|x265|10bit|ESub'
+        # Preserves Season so it stays in Filenames
+        noise = r'Dubbed|Hindi|Dual|Audio|Multi|Episodes?|Downloads?|Full|Series|Zon-E|HD|BluRay|FHD|SD'
         cleaned = re.sub(noise, '', text, flags=re.I).replace('.', ' ').replace('_', ' ')
         return re.sub(r'\s+', ' ', cleaned).strip()
-
 
     async def _delayed_delete(self, path: str):
         """Asynchronously deletes a file after a delay to prevent disk bloat."""
