@@ -1,6 +1,7 @@
 import re
 import time
 import logging
+import asyncio
 import random
 from typing import List, Dict, Optional, Any, Set, Tuple
 from datetime import datetime, timedelta, timezone
@@ -19,6 +20,7 @@ class HindiAnimeZone:
     """
     Professional Bypasser for HindiAnimeZone.com.
     Handles multi-quality episodes and direct gate links.
+    Optimized for asynchronous parallel analysis.
     """
     
     BASE_URL = "https://hindianimezone.com/"
@@ -28,13 +30,17 @@ class HindiAnimeZone:
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     ]
 
-    def __init__(self):
-        if currequests:
-            self.session = currequests.Session(impersonate="chrome124")
-        else:
-            self.session = Session()
-            self.session.headers.update({'User-Agent': random.choice(self.USER_AGENTS)})
-            
+    def __init__(self, async_session=None):
+        self.session = async_session
+        self._own_session = False
+        if not self.session:
+            if currequests:
+                self.session = currequests.AsyncSession(impersonate="chrome124")
+                self._own_session = True
+            else:
+                self.session = Session() # Fallback for non-async usage if needed
+                self.session.headers.update({'User-Agent': random.choice(self.USER_AGENTS)})
+                
         self.session.headers.update({
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
@@ -42,17 +48,21 @@ class HindiAnimeZone:
         })
         self.GATE_PATTERN = re.compile(r'code=[a-z0-9]{4,}', re.I)
 
-    def pro_main_bypass(self, url: str, selection: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+    async def close(self):
+        if self._own_session and hasattr(self.session, 'close'):
+            await self.session.close()
+
+    async def pro_main_bypass(self, url: str, selection: Optional[List[int]] = None) -> List[Dict[str, Any]]:
         """
-        Main entry point for bypassing HindiAnimeZone links.
+        Main entry point for bypassing HindiAnimeZone links (Asynchronous).
         """
         logger.info(f"Analyzing HindiAnimeZone URL: {url}")
         
         if self.GATE_PATTERN.search(url):
-            return self._handle_direct_gate(url)
+            return await self._handle_direct_gate(url)
 
         try:
-            r = self.session.get(url, timeout=20)
+            r = await self.session.get(url, timeout=20)
             soup = BeautifulSoup(r.text, 'html.parser')
             page_title = soup.find('h1').get_text(strip=True) if soup.find('h1') else "Anime Content"
 
@@ -70,44 +80,43 @@ class HindiAnimeZone:
             results = []
             seen_hrefs: Set[str] = set()
             
+            # 1. First pass: extract episode basic info and quality link maps
+            ep_data_list = []
             for ep_div in episodes:
                 ep_name = self._extract_ep_name(ep_div, page_title)
                 if 'how to download' in ep_name.lower(): continue
                 
-                # Language filtering: only Hindi or Multi-audio
                 lang_tag = ep_div.select_one('.language')
                 lang_text = lang_tag.get_text(strip=True).lower() if lang_tag else ""
                 if not any(x in lang_text for x in ['hindi', 'multi', 'dual']):
-                    # Fallback check on ep_name or page_title
                     if not any(x in ep_name.lower() or x in page_title.lower() for x in ['hindi', 'multi', 'dual']):
                         continue
                     
                 quality_map = self._get_quality_links(ep_div, seen_hrefs)
                 if not quality_map: continue
-                    
-                episode_entry = {
+                
+                ep_data_list.append({
                     "episode": ep_name.split('|')[0].strip(),
-                    "downloads": [],
+                    "quality_map": quality_map,
                     "series_info": page_title
-                }
+                })
+
+            # 2. Parallel Link Resolution: Use asyncio.gather to resolve all links concurrently
+            async def resolve_extractions(ep_data):
+                ep_entry = {"episode": ep_data['episode'], "downloads": [], "series_info": ep_data['series_info']}
                 
-                logger.info(f"Processing Episode: {episode_entry['episode']}")
-                for q, data in quality_map.items():
-                    server_links = self.bypass_gate(data['url'])
-                    if not server_links: continue
-                    
-                    for srv, srv_url in server_links.items(): 
-                        final_link = self.get_final_link(srv, srv_url)
-                        if final_link:
-                            episode_entry["downloads"].append({
-                                "label": data['label'],
-                                "link": final_link,
-                                "server": srv,
-                                "metadata": self._get_metadata()
-                            })
+                tasks = []
+                for q, data in ep_data['quality_map'].items():
+                    tasks.append(self._process_quality(q, data))
                 
-                if episode_entry["downloads"]:
-                    results.append(episode_entry)
+                res = await asyncio.gather(*tasks)
+                for dl_list in res:
+                    if dl_list: ep_entry["downloads"].extend(dl_list)
+                return ep_entry if ep_entry["downloads"] else None
+
+            final_processing_tasks = [resolve_extractions(ed) for ed in ep_data_list]
+            resolved_episodes = await asyncio.gather(*final_processing_tasks)
+            results = [re for re in resolved_episodes if re]
             
             return results
         except Exception as e:
@@ -151,22 +160,41 @@ class HindiAnimeZone:
                     q_map[q_key] = {'label': label, 'url': href}
         return q_map
 
-    def _handle_direct_gate(self, url: str) -> List[Dict[str, Any]]:
-        links = self.bypass_gate(url)
+    async def _process_quality(self, q, data):
+        """Helper to process a single quality concurrently."""
+        server_links = await self.bypass_gate(data['url'])
+        if not server_links: return []
+        
+        dl_list = []
+        # Support parallel resolution of multiple servers if needed, but usually 1-2 major ones exist
+        for srv, srv_url in server_links.items():
+            final_link = await self.get_final_link(srv, srv_url)
+            if final_link:
+                dl_list.append({
+                    "label": data['label'],
+                    "link": final_link,
+                    "server": srv,
+                    "metadata": self._get_metadata()
+                })
+        return dl_list
+
+    async def _handle_direct_gate(self, url: str) -> List[Dict[str, Any]]:
+        links = await self.bypass_gate(url)
         downloads = []
         if links:
-            for sname, surl in links.items(): 
-                final = self.get_final_link(sname, surl)
-                if final:
-                    downloads.append({"label": "Direct Link", "link": final, "server": sname, "metadata": self._get_metadata()})
+            tasks = [self.get_final_link(s, u) for s, u in links.items()]
+            finals = await asyncio.gather(*tasks)
+            names = list(links.keys())
+            for i, f in enumerate(finals):
+                if f: downloads.append({"label": "Direct Link", "link": f, "server": names[i], "metadata": self._get_metadata()})
         
         return [{"episode": "Direct Download", "downloads": downloads}] if downloads else []
 
-    def bypass_gate(self, gate_url: str) -> Optional[Dict[str, str]]:
-        """Simulates verification flow to reveal server links."""
+    async def bypass_gate(self, gate_url: str) -> Optional[Dict[str, str]]:
+        """Simulates verification flow to reveal server links (Async)."""
         try:
-            r = self.session.get(gate_url, timeout=15)
-            final_url = r.url
+            r = await self.session.get(gate_url, timeout=15)
+            final_url = str(r.url)
             
             def extract(html: str) -> Dict[str, str]:
                 s = BeautifulSoup(html, 'html.parser')
@@ -178,23 +206,22 @@ class HindiAnimeZone:
                             if srv in t: l[srv] = a['href']
                 return l
 
-            for _ in range(3):
+            for _ in range(2): # Reduced retries for speed
                 links = extract(r.text)
                 if links: return links
-                time.sleep(1.5)
-                # Attempt verification triggers
-                self.session.post(final_url, data={"verify": "1"}, headers={'Referer': final_url}, timeout=15)
-                r = self.session.get(final_url, headers={'Referer': final_url}, timeout=15)
+                await asyncio.sleep(1.2)
+                await self.session.post(final_url, data={"verify": "1"}, headers={'Referer': final_url}, timeout=15)
+                r = await self.session.get(final_url, headers={'Referer': final_url}, timeout=15)
             return extract(r.text) or None
         except: return None
 
-    def get_final_link(self, srv_name: str, url: str) -> Optional[str]:
-        """Routes to specific server bypassers."""
+    async def get_final_link(self, srv_name: str, url: str) -> Optional[str]:
+        """Routes to specific server bypassers (Async)."""
         srv = srv_name.upper()
         res = None
-        if 'GDSHARE' in srv: res = self._bypass_gdshare(url)
-        elif 'GDFLIX' in srv: res = self._bypass_gdflix(url)
-        elif 'FILEPRESS' in srv: res = self._bypass_filepress(url)
+        if 'GDSHARE' in srv: res = await self._bypass_gdshare(url)
+        elif 'GDFLIX' in srv: res = await self._bypass_gdflix(url)
+        elif 'FILEPRESS' in srv: res = await self._bypass_filepress(url)
         
         if res: logger.info(f"Final DL ({srv_name}): {res}")
         return res
@@ -205,55 +232,60 @@ class HindiAnimeZone:
             "user_agent": self.session.headers.get('User-Agent')
         }
 
-    def _bypass_gdshare(self, url: str) -> Optional[str]:
+    async def _bypass_gdshare(self, url: str) -> Optional[str]:
         try:
-            # Using main session for unified tokens
-            r = self.session.get(url, timeout=15)
+            r = await self.session.get(url, timeout=15)
             csrf_match = re.search(r"CSRF_TOKEN\s*=\s*['\"]([^'\"]+)", r.text)
             if not csrf_match: return None
             csrf = csrf_match.group(1)
             
-            h = {"X-Requested-With": "XMLHttpRequest", "X-CSRF-Token": csrf, "Referer": r.url}
-            data = self.session.get(r.url, headers=h, timeout=10).json()
+            h = {"X-Requested-With": "XMLHttpRequest", "X-CSRF-Token": csrf, "Referer": str(r.url)}
+            resp = await self.session.get(str(r.url), headers=h, timeout=10)
+            data = resp.json()
             token = data["data"]["access_token"]
             
-            j = self.session.get(f"{r.url}&get_secure_links=1&access_token={token}", headers=h, timeout=10).json()
+            resp2 = await self.session.get(f"{r.url}&get_secure_links=1&access_token={token}", headers=h, timeout=10)
+            j = resp2.json()
             inst = f"https://gcloud.sbs/instant/{j['gphotos_id']}/{j['gp_id']}"
             
-            r2 = self.session.get(inst, headers=h)
+            r2 = await self.session.get(inst, headers=h)
             csrf2_match = re.search(r"CSRF_TOKEN\s*=\s*['\"]([^'\"]+)", r2.text)
             if csrf2_match:
                 h["X-CSRF-Token"] = csrf2_match.group(1)
             
-            return self.session.get(f"{inst}?ajax=1", headers=h).json().get("download_url")
+            res_final = await self.session.get(f"{inst}?ajax=1", headers=h)
+            return res_final.json().get("download_url")
         except: return None
 
-    def _bypass_filepress(self, url: str) -> Optional[str]:
+    async def _bypass_filepress(self, url: str) -> Optional[str]:
         try:
             fid = re.search(r'/file/([a-f0-9]+)', url).group(1)
             domain = re.search(r'(https?://[^/]+)', url).group(1)
             api = f"{domain}/api/file"
             h = {"User-Agent": "Mozilla/5.0", "Referer": f"{domain}/file/{fid}"}
 
-            info = requests.get(f"{api}/get/{fid}", headers=h).json()
+            resp = await self.session.get(f"{api}/get/{fid}", headers=h)
+            info = resp.json()
             name = info["data"]["name"]
             
-            token_res = requests.post(f"{api}/downlaod/", 
+            resp_token = await self.session.post(f"{api}/downlaod/", 
                 json={"id": fid, "method": "indexDownlaod", "captchaValue": ""}, 
-                headers=h).json()
+                headers=h)
+            token_res = resp_token.json()
             token = token_res["data"]
 
             h["Referer"] = f"{domain}/download/{name}"
-            final = requests.post(f"{api}/downlaod2/", 
+            resp_final = await self.session.post(f"{api}/downlaod2/", 
                 json={"id": token, "method": "indexDownlaod", "captchaValue": None}, 
-                headers=h).json()
+                headers=h)
+            final = resp_final.json()
             return final["data"][0] if final.get("status") else None
         except: return None
 
-    def _bypass_gdflix(self, url: str) -> Optional[str]:
+    async def _bypass_gdflix(self, url: str) -> Optional[str]:
         try:
             h = {"User-Agent": self.USER_AGENTS[0]}
-            r = requests.get(url, headers=h, timeout=15)
+            r = await self.session.get(url, headers=h, timeout=15)
             soup = BeautifulSoup(r.text, 'html.parser')
             domain = re.search(r'https?://([^/]+)', url).group(1)
 
@@ -262,17 +294,19 @@ class HindiAnimeZone:
                     if target in a.get_text(strip=True).upper() and "login" not in a["href"].lower():
                         link = a["href"] if a["href"].startswith("http") else f"https://{domain}{a['href']}"
                         try:
-                            final_head = requests.head(link, headers=h, allow_redirects=True, timeout=10).url
+                            # head/get works better with Chrome impersonation
+                            resp = await self.session.get(link, headers=h, allow_redirects=True, timeout=10)
+                            final_head = str(resp.url)
                             if "url=" in final_head:
                                 return re.search(r'url=(https?://[^\s&]+)', final_head).group(1)
                             return final_head
                         except: return link
         except: return None
 
-    def get_episode_info(self, url: str) -> Dict[str, Any]:
+    async def get_episode_info(self, url: str) -> Dict[str, Any]:
         """Scans page for Hindi/Multi count."""
         try:
-            r = self.session.get(url, timeout=15)
+            r = await self.session.get(url, timeout=15)
             soup = BeautifulSoup(r.text, 'html.parser')
             max_ep, has_h = 0, False
             for ep in soup.select('div.episode'):
@@ -286,16 +320,17 @@ class HindiAnimeZone:
             return {'count': max_ep if has_h else "N/A", 'status': "HINDI/MULTI" if has_h else "ENG/JAP"}
         except: return {'count': "N/A", 'status': "UNKNOWN"}
 
-    def _process_legacy_page(self, soup: BeautifulSoup) -> List[Dict[str, Any]]:
+    async def _process_legacy_page(self, soup: BeautifulSoup) -> List[Dict[str, Any]]:
         seen: Set[str] = set()
         q_map = self._get_quality_links(soup, seen)
-        downloads = []
+        
+        tasks = []
         for q, data in q_map.items():
-            links = self.bypass_gate(data['url'])
-            if not links: continue
-            for sname, surl in links.items(): 
-                final = self.get_final_link(sname, surl)
-                if final:
-                    downloads.append({"label": data['label'], "link": final, "server": sname, "metadata": self._get_metadata()})
+            tasks.append(self._process_quality(q, data))
+        
+        results = await asyncio.gather(*tasks)
+        downloads = []
+        for dl_list in results:
+            if dl_list: downloads.extend(dl_list)
         
         return [{"episode": "Content", "downloads": downloads}] if downloads else []

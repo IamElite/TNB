@@ -822,7 +822,12 @@ class AnimeBot:
             episodes = res.get("episodes", [])
             series_info = res.get("series_info")
         else: # hindianimezone
-            episodes = await asyncio.to_thread(HindiAnimeZone().pro_main_bypass, url, selection=selection)
+            haz = HindiAnimeZone()
+            try:
+                episodes = await haz.pro_main_bypass(url, selection=selection)
+            finally:
+                await haz.close()
+            
             if not episodes:
                 return await Utils.safe_edit(status, "❌ No episodes found.", force=True)
             bypasser = RareAnimes() # Uses shared resolver
