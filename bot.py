@@ -898,16 +898,34 @@ class AnimeBot:
             if i + 1 < len(episodes):
                 next_res_task = asyncio.create_task(safe_resolve(episodes[i+1]))
 
-            # 3. Process current episode (Sequential DL -> UL)
+            # 3. Process current episode
             ep_status = await m.reply(f"⏳ **Processing Episode {i+1}/{len(episodes)}...**")
             try:
-                # Prepare (Resolve Mirror + Download + Split)
-                paths, ep_series_info = await self._prepare_episode(m, ep, bypasser, ep_status, len(episodes), i+1, series_info, pref_quality)
+                downloads = ep.get('downloads', [])
+                if pref_quality:
+                    downloads = [d for d in downloads if pref_quality.lower() in d.get('label', '').lower()]
                 
-                # Upload
-                if paths:
-                    await Utils.safe_edit(ep_status, f"📤 **Uploading Episode {i+1}/{len(episodes)}...**")
-                    await self._upload_episode(m, paths, ep_status, len(episodes), i+1, ep_series_info)
+                # Deduplicate qualities
+                unique_dl = {}
+                for dl in downloads:
+                    label = dl.get('label', 'N/A')
+                    if label not in unique_dl: unique_dl[label] = dl
+                
+                if not unique_dl:
+                    logger.warning(f"[!] No valid qualities for Ep {i+1}")
+                    continue
+
+                for label, dl in unique_dl.items():
+                    logger.info(f"[*] Processing Quality: {label} for Ep {i+1}")
+                    await Utils.safe_edit(ep_status, f"⏬ **Downloading {label} (Ep {i+1})...**")
+                    
+                    # 4. Sequential DL -> Split -> UL for THIS quality
+                    paths, ep_series_info = await self._prepare_quality(m, ep, dl, bypasser, ep_status, len(episodes), i+1, series_info)
+                    
+                    if paths:
+                        await Utils.safe_edit(ep_status, f"📤 **Uploading {label} (Ep {i+1})...**")
+                        await self._upload_episode(m, paths, ep_status, len(episodes), i+1, ep_series_info)
+                    
             except Exception as e:
                 logger.error(f"Failed processing Ep {i+1}: {e}")
             finally:
@@ -923,55 +941,41 @@ class AnimeBot:
             return usage.free > (1.5 * 1024 * 1024 * 1024) # 1.5GB safety margin
         except: return True
 
-    async def _prepare_episode(self, m, ep, bypasser, status, total, current, series_info, pref_quality=None):
-        """Resolves, downloads, filters, and splits an episode. Returns (list_of_paths, series_info)."""
+    async def _prepare_quality(self, m, ep, dl, bypasser, status, total, current, series_info):
+        """Resolves, downloads, filters, and splits a SINGLE quality. Returns (list_of_paths, series_info)."""
         try:
-            downloads = ep.get('downloads')
-            if not downloads: return None, None
-            
-            if pref_quality:
-                downloads = [d for d in downloads if pref_quality.lower() in d.get('label', '').lower()]
-            
-            if not downloads: return None, None
-            
             req_dir = os.path.join(Config.DOWNLOAD_DIR, str(m.id))
             if not os.path.exists(req_dir): os.makedirs(req_dir)
 
-            unique_dl = {}
-            for dl in downloads:
-                label = dl.get('label', 'N/A')
-                if label not in unique_dl: unique_dl[label] = dl
+            url, meta, label = dl['link'], dl.get('metadata', {}), dl.get('label', 'N/A')
+            fname = await asyncio.to_thread(Utils.resolve_filename, url, meta.get('referer'), meta.get('cookies'))
+            if fname: fname = self._clean_filename(fname)
             
-            final_paths = []
-            for dl in unique_dl.values():
-                url, meta, label = dl['link'], dl.get('metadata', {}), dl.get('label', 'N/A')
-                fname = await asyncio.to_thread(Utils.resolve_filename, url, meta.get('referer'), meta.get('cookies'))
-                if fname: fname = self._clean_filename(fname)
+            if not fname or len(fname) < 5:
+                if isinstance(series_info, dict):
+                    base_name = series_info.get('name', 'Anime')
+                    se_str = f"S{str(series_info.get('season')).zfill(2)}" if series_info.get('season') else ""
+                else:
+                    s = re.search(r'S(\d+)|Season\s*(\d+)', series_info or "", re.I)
+                    se_str = f"S{(s.group(1) or s.group(2)).zfill(2)}" if s else ""
+                    base_name = series_info or 'Anime'
                 
-                if not fname or len(fname) < 5:
-                    if isinstance(series_info, dict):
-                        base_name = series_info.get('name', 'Anime')
-                        se_str = f"S{str(series_info.get('season')).zfill(2)}" if series_info.get('season') else ""
-                    else:
-                        s = re.search(r'S(\d+)|Season\s*(\d+)', series_info or "", re.I)
-                        se_str = f"S{(s.group(1) or s.group(2)).zfill(2)}" if s else ""
-                        base_name = series_info or 'Anime'
-                    
-                    ep_num = re.search(r'(\d+)', ep.get('episode', ''))
-                    ep_str = f"E{ep_num.group(1).zfill(2)}" if ep_num else f"E{str(current).zfill(2)}"
-                    fname = f"{self._clean_noise(base_name)} {se_str} {ep_str} [{label.upper()}].mp4"
-                
-                fpath = os.path.join(req_dir, re.sub(r'[\\/*?:"<>|]', "", fname).strip())
-                if await self._download_manager(url, fpath, status, meta):
-                    await self._filter_hindi_audio(fpath, status)
-                    paths = await self._split_video(fpath, status)
-                    final_paths.extend(paths)
-                    if fpath not in final_paths:
-                         asyncio.create_task(self._delayed_delete(fpath))
+                ep_num = re.search(r'(\d+)', ep.get('episode', ''))
+                ep_str = f"E{ep_num.group(1).zfill(2)}" if ep_num else f"E{str(current).zfill(2)}"
+                fname = f"{self._clean_noise(base_name)} {se_str} {ep_str} [{label.upper()}].mp4"
             
-            return final_paths, series_info
+            fpath = os.path.join(req_dir, re.sub(r'[\\/*?:"<>|]', "", fname).strip())
+            if await self._download_manager(url, fpath, status, meta):
+                await self._filter_hindi_audio(fpath, status)
+                paths = await self._split_video(fpath, status)
+                # Cleanup original file if it was split or faststarted
+                if fpath not in paths:
+                     asyncio.create_task(self._delayed_delete(fpath))
+                return paths, series_info
+            
+            return None, None
         except Exception as e:
-            logger.error(f"Prepare Episode Error: {e}")
+            logger.error(f"Prepare Quality Error: {e}")
             return None, None
 
     async def _upload_episode(self, m, paths, status, total, current, series_info):
