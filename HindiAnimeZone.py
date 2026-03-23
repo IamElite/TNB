@@ -32,7 +32,7 @@ class HindiAnimeZone:
             'Accept-Language': 'en-US,en;q=0.9',
             'Referer': self.BASE_URL
         })
-        self.GATE_PATTERN = re.compile(r'code=[a-z0-9]{10,}', re.I)
+        self.GATE_PATTERN = re.compile(r'code=[a-z0-9]{4,}', re.I)
 
     def pro_main_bypass(self, url: str, selection: Optional[List[int]] = None) -> List[Dict[str, Any]]:
         """
@@ -118,12 +118,16 @@ class HindiAnimeZone:
             href, text = a['href'], a.get_text(strip=True).lower()
             if 't.me' in href or 'telegram' in text or 'watch' in text or href in seen:
                 continue
-            if not self.GATE_PATTERN.search(href):
+            
+            # Allow links with code or links from like.hindianimezone.com
+            is_valid_gate = self.GATE_PATTERN.search(href) or "like.hindianimezone.com" in href
+            if not is_valid_gate:
                 continue
             
             seen.add(href)
             q_key = None
             q_match = re.search(r'q=([^&]+)', href)
+            # Use q parameter or link text as quality label
             q_val = q_match.group(1).lower().replace('+', ' ') if q_match else text
             
             if '480p' in q_val: q_key = '480p'
@@ -134,7 +138,9 @@ class HindiAnimeZone:
             if q_key:
                 is_better = any(x in text for x in ['x265', '10bit', 'hevc'])
                 if q_key not in q_map or is_better:
-                    q_map[q_key] = {'label': text.upper() or q_key.upper(), 'url': href}
+                    label = text.upper() if len(text) > 3 else q_key.upper()
+                    if 'X265' not in label.upper() and 'X265' in q_val.upper(): label += " x265"
+                    q_map[q_key] = {'label': label, 'url': href}
         return q_map
 
     def _handle_direct_gate(self, url: str) -> List[Dict[str, Any]]:
