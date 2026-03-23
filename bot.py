@@ -869,60 +869,50 @@ class AnimeBot:
         await status.delete()
 
     async def _process_episodes(self, m, episodes, bypasser, series_info, pref_quality=None):
-        # Pipeline orchestrator: Overlaps Upload of Episode N with Download/Prep of Episode N+1
-        prep_task = None
+        # JIT Resolution: Only overlaps 'link resolution' in background. 
+        # Download and Upload stay sequential to protect storage and network speed.
+        next_res_task = None
         
-        async def safe_resolve_and_prep(index, ep):
+        async def safe_resolve(ep):
             try:
-                # 1. Resolve
                 if hasattr(bypasser, 'resolve_episode'):
                     if isinstance(bypasser, HindiAnimeZone):
                         haz = HindiAnimeZone()
-                        try: ep = await haz.resolve_episode(ep)
+                        try: return await haz.resolve_episode(ep)
                         finally: await haz.close()
-                    else:
-                        ep = await bypasser.resolve_episode(ep)
-                
-                # 2. Prepare (Download, Filter, Split)
-                ep_status = await m.reply(f"⏬ **Preparing Episode {index+1}/{len(episodes)}...**")
-                try:
-                    paths, ep_series_info = await self._prepare_episode(m, ep, bypasser, ep_status, len(episodes), index+1, series_info, pref_quality)
-                    return paths, ep_series_info
-                finally:
-                    try: await ep_status.delete()
-                    except: pass
+                    return await bypasser.resolve_episode(ep)
+                return ep
             except Exception as e:
-                logger.error(f"Prep Error for Ep {index+1}: {e}")
-                return None, None
+                logger.error(f"Resolution error: {e}")
+                return ep
 
-        # Start prep for the first episode
-        prep_task = asyncio.create_task(safe_resolve_and_prep(0, episodes[0]))
+        # Start first resolution
+        next_res_task = asyncio.create_task(safe_resolve(episodes[0]))
 
         for i in range(len(episodes)):
-            # Wait for current episode to be ready
-            paths, ep_series_info = await prep_task
+            # 1. Wait for current resolution
+            ep = await next_res_task
             
-            # Start prep for NEXT episode in background if disk allows
-            prep_task = None
+            # 2. Start NEXT resolution in background
+            next_res_task = None
             if i + 1 < len(episodes):
-                if self._has_enough_disk():
-                    logger.info(f"[*] Disk Space OK. Pre-downloading Episode {i+2}...")
-                    prep_task = asyncio.create_task(safe_resolve_and_prep(i+1, episodes[i+1]))
-                else:
-                    logger.warning("[!] Low disk space. Skipping pre-download.")
+                next_res_task = asyncio.create_task(safe_resolve(episodes[i+1]))
 
-            # Upload current episode
-            if paths:
-                up_status = await m.reply(f"📤 **Uploading Episode {i+1}/{len(episodes)}...**")
-                try:
-                    await self._upload_episode(m, paths, up_status, len(episodes), i+1, ep_series_info)
-                finally:
-                    try: await up_status.delete()
-                    except: pass
-            
-            # If next prep was skipped due to disk, start it now (blocking)
-            if i + 1 < len(episodes) and prep_task is None:
-                prep_task = asyncio.create_task(safe_resolve_and_prep(i+1, episodes[i+1]))
+            # 3. Process current episode (Sequential DL -> UL)
+            ep_status = await m.reply(f"⏳ **Processing Episode {i+1}/{len(episodes)}...**")
+            try:
+                # Prepare (Resolve Mirror + Download + Split)
+                paths, ep_series_info = await self._prepare_episode(m, ep, bypasser, ep_status, len(episodes), i+1, series_info, pref_quality)
+                
+                # Upload
+                if paths:
+                    await Utils.safe_edit(ep_status, f"📤 **Uploading Episode {i+1}/{len(episodes)}...**")
+                    await self._upload_episode(m, paths, ep_status, len(episodes), i+1, ep_series_info)
+            except Exception as e:
+                logger.error(f"Failed processing Ep {i+1}: {e}")
+            finally:
+                try: await ep_status.delete()
+                except: pass
 
         if hasattr(bypasser, 'close'):
             await bypasser.close()
