@@ -114,8 +114,8 @@ class RareAnimes:
             logger.warning(f"[!] Session warmup failed: {e}")
             self.initialized = True
 
-    def get_links(self, url: str, ep_start: Optional[int] = None, ep_end: Optional[int] = None) -> Dict[str, Any]:
-        """Main entry point to extract direct links from a series page."""
+    def get_episode_list(self, url: str, ep_start: Optional[int] = None, ep_end: Optional[int] = None) -> Dict[str, Any]:
+        """Fast parsing of the series page to identify episodes without bypassing mirrors."""
         try:
             self.init_session()
             resp = self.session.get(url, timeout=20)
@@ -130,11 +130,31 @@ class RareAnimes:
 
             # Range-based episode selection
             selected_eps = self._filter_episodes(raw_eps, ep_start, ep_end)
-            
-            results = []
-            if not selected_eps:
-                return {"episodes": [], "series_info": series_info}
-            
+            return {"episodes": selected_eps, "series_info": series_info}
+        except Exception as e:
+            logger.error(f"Error in get_episode_list: {e}", exc_info=True)
+            return {"error": str(e), "episodes": []}
+
+    async def resolve_episode(self, ep: Dict[str, Any]) -> Dict[str, Any]:
+        """Resolves mirrors for a single episode (JIT)."""
+        if ep.get("resolved"): return ep
+        
+        logger.info(f"[*] JIT Resolution for {ep['label']}...")
+        links = await asyncio.to_thread(self._try_mirrors, ep["mirrors"])
+        
+        ep["downloads"] = links if links else []
+        ep["metadata"] = {"cookies": self.session.cookies.get_dict(), "user_agent": self.UA}
+        ep["episode"] = ep["label"]
+        ep["resolved"] = True
+        return ep
+
+    def get_links(self, url: str, ep_start: Optional[int] = None, ep_end: Optional[int] = None) -> Dict[str, Any]:
+        """Legacy wrapper that resolves all links at once."""
+        data = self.get_episode_list(url, ep_start, ep_end)
+        if "error" in data: return data
+        
+        results = []
+        with ThreadPoolExecutor(max_workers=Config.MIRROR_MAX_WORKERS) as executor:
             def process_ep(ep):
                 links = self._try_mirrors(ep["mirrors"])
                 return {
@@ -142,16 +162,10 @@ class RareAnimes:
                     "downloads": links if links else [],
                     "metadata": {"cookies": self.session.cookies.get_dict(), "user_agent": self.UA}
                 }
-            
-            logger.info(f"[*] Bypassing mirrors for {len(selected_eps)} episodes concurrently...")
-            with ThreadPoolExecutor(max_workers=Config.MIRROR_MAX_WORKERS) as executor:
-                for res in executor.map(process_ep, selected_eps):
-                    results.append(res)
-
-            return {"episodes": results, "series_info": series_info}
-        except Exception as e:
-            logger.error(f"Error in get_links: {e}", exc_info=True)
-            return {"error": str(e), "episodes": []}
+            for res in executor.map(process_ep, data["episodes"]):
+                results.append(res)
+        data["episodes"] = results
+        return data
 
     def _scrape_series_metadata(self, soup: BeautifulSoup, url: str) -> Dict[str, Any]:
         """Extracts comprehensive metadata: Name, Season, and expected Qualities."""
@@ -819,7 +833,7 @@ class AnimeBot:
             ep_start = min(selection) if selection else None
             ep_end = max(selection) if selection else None
             bypasser = RareAnimes()
-            res = await asyncio.to_thread(bypasser.get_links, url, ep_start, ep_end)
+            res = await asyncio.to_thread(bypasser.get_episode_list, url, ep_start, ep_end)
             if "error" in res:
                 return await Utils.safe_edit(status, f"❌ Error: {res['error']}", force=True)
             episodes = res.get("episodes", [])
@@ -827,32 +841,70 @@ class AnimeBot:
         else: # hindianimezone
             haz = HindiAnimeZone()
             try:
-                episodes = await haz.pro_main_bypass(url, selection=selection)
+                episodes = await haz.get_episode_list(url, selection=selection)
             finally:
                 await haz.close()
             
             if not episodes:
                 return await Utils.safe_edit(status, "❌ No episodes found.", force=True)
-            bypasser = RareAnimes() # Uses shared resolver
+            bypasser = HindiAnimeZone() # Create a fresh one for JIT resolution
             series_info = episodes[0].get("series_info") if episodes else None
 
         if not episodes:
             return await Utils.safe_edit(status, "❌ No episodes to process.", force=True)
 
         q_msg = f" (Quality: {pref_quality})" if pref_quality else ""
-        await Utils.safe_edit(status, f"✅ Found {len(episodes)} episodes{q_msg}. Processing sequentially...", force=True)
+        await Utils.safe_edit(status, f"✅ Found {len(episodes)} episodes{q_msg}. JIT Processing active...", force=True)
         await self._process_episodes(m, episodes, bypasser, series_info, pref_quality)
         await status.delete()
 
     async def _process_episodes(self, m, episodes, bypasser, series_info, pref_quality=None):
-        # Sequential processing using Semaphore(1) or direct loop
-        for i, ep in enumerate(episodes, 1):
-            ep_status = await m.reply(f"⏳ **Queued Episode {i}/{len(episodes)}...**")
+        # lookahead task to pre-resolve the next episode
+        next_res_task = None
+        
+        async def safe_resolve(ep):
             try:
-                await self._process_episode(m, ep, bypasser, ep_status, len(episodes), i, series_info, pref_quality)
+                if hasattr(bypasser, 'resolve_episode'):
+                    # Reuse session if possible or create one
+                    if isinstance(bypasser, HindiAnimeZone):
+                        haz = HindiAnimeZone()
+                        try: return await haz.resolve_episode(ep)
+                        finally: await haz.close()
+                    return await bypasser.resolve_episode(ep)
+                return ep
+            except Exception as e:
+                logger.error(f"Resolve Error: {e}")
+                return ep
+
+        for i, ep in enumerate(episodes):
+            ep_status = await m.reply(f"⏳ **Resolving Episode {i+1}/{len(episodes)}...**")
+            
+            # 1. Resolve Current Episode
+            if i == 0:
+                # First one needs resolution now
+                ep = await safe_resolve(ep)
+            else:
+                # Wait for pre-resolution task from previous iteration
+                if next_res_task:
+                    ep = await next_res_task
+                else:
+                    ep = await safe_resolve(ep)
+            
+            # 2. Start pre-resolving NEXT episode in background
+            next_res_task = None
+            if i + 1 < len(episodes):
+                next_res_task = asyncio.create_task(safe_resolve(episodes[i+1]))
+
+            # 3. Process current episode
+            try:
+                await ep_status.edit(f"🚀 **Processing Episode {i+1}/{len(episodes)}...**")
+                await self._process_episode(m, ep, bypasser, ep_status, len(episodes), i+1, series_info, pref_quality)
             finally:
                 try: await ep_status.delete()
                 except: pass
+        
+        if hasattr(bypasser, 'close'):
+            await bypasser.close()
 
     async def _process_episode(self, m, ep, bypasser, status, total, current, series_info, pref_quality=None):
         try:

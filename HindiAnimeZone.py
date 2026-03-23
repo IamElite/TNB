@@ -52,12 +52,12 @@ class HindiAnimeZone:
         if self._own_session and hasattr(self.session, 'close'):
             await self.session.close()
 
-    async def pro_main_bypass(self, url: str, selection: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+    async def get_episode_list(self, url: str, selection: Optional[List[int]] = None) -> List[Dict[str, Any]]:
         """
-        Main entry point for bypassing HindiAnimeZone links (Asynchronous).
+        Quickly parses the page to find episodes and their gate links.
+        Does NOT resolve final download links yet (JIT optimization).
         """
-        logger.info(f"Analyzing HindiAnimeZone URL: {url}")
-        
+        logger.info(f"Parsing HindiAnimeZone episodes: {url}")
         if self.GATE_PATTERN.search(url):
             return await self._handle_direct_gate(url)
 
@@ -66,22 +66,18 @@ class HindiAnimeZone:
             soup = BeautifulSoup(r.text, 'html.parser')
             page_title = soup.find('h1').get_text(strip=True) if soup.find('h1') else "Anime Content"
 
-            # Primary content detection
             all_ep = soup.select('div.episode')
             episodes = [ep for ep in all_ep if not ep.find('div', class_='episode')]
             
             if not episodes:
-                return self._process_legacy_page(soup)
+                # For legacy pages, we still resolve immediately as they are usually single-episode
+                return await self._process_legacy_page(soup)
 
-            # Selection filtering
             if selection:
                 episodes = [episodes[i-1] for i in selection if 0 < i <= len(episodes)]
 
-            results = []
-            seen_hrefs: Set[str] = set()
-            
-            # 1. First pass: extract episode basic info and quality link maps
             ep_data_list = []
+            seen_hrefs: Set[str] = set()
             for ep_div in episodes:
                 ep_name = self._extract_ep_name(ep_div, page_title)
                 if 'how to download' in ep_name.lower(): continue
@@ -98,30 +94,37 @@ class HindiAnimeZone:
                 ep_data_list.append({
                     "episode": ep_name.split('|')[0].strip(),
                     "quality_map": quality_map,
-                    "series_info": page_title
+                    "series_info": page_title,
+                    "resolved": False # Mark as needs resolution
                 })
-
-            # 2. Parallel Link Resolution: Use asyncio.gather to resolve all links concurrently
-            async def resolve_extractions(ep_data):
-                ep_entry = {"episode": ep_data['episode'], "downloads": [], "series_info": ep_data['series_info']}
-                
-                tasks = []
-                for q, data in ep_data['quality_map'].items():
-                    tasks.append(self._process_quality(q, data))
-                
-                res = await asyncio.gather(*tasks)
-                for dl_list in res:
-                    if dl_list: ep_entry["downloads"].extend(dl_list)
-                return ep_entry if ep_entry["downloads"] else None
-
-            final_processing_tasks = [resolve_extractions(ed) for ed in ep_data_list]
-            resolved_episodes = await asyncio.gather(*final_processing_tasks)
-            results = [re for re in resolved_episodes if re]
             
-            return results
+            return ep_data_list
         except Exception as e:
-            logger.error(f"HindiAnimeZone Error: {e}", exc_info=True)
+            logger.error(f"HindiAnimeZone Parse Error: {e}")
             return []
+
+    async def resolve_episode(self, ep_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Resolves gate links for a single episode."""
+        if ep_data.get("resolved") or not ep_data.get("quality_map"):
+            return ep_data
+
+        tasks = []
+        for q, data in ep_data['quality_map'].items():
+            tasks.append(self._process_quality(q, data))
+        
+        res = await asyncio.gather(*tasks)
+        ep_data["downloads"] = []
+        for dl_list in res:
+            if dl_list: ep_data["downloads"].extend(dl_list)
+        
+        ep_data["resolved"] = True
+        return ep_data
+
+    async def pro_main_bypass(self, url: str, selection: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+        """Legacy wrapper that resolves all links at once."""
+        ep_list = await self.get_episode_list(url, selection)
+        tasks = [self.resolve_episode(ep) for ep in ep_list]
+        return await asyncio.gather(*tasks)
 
     def _extract_ep_name(self, ep_div: BeautifulSoup, fallback: str) -> str:
         tag = ep_div.select_one('.episode-title')
