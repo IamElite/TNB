@@ -1090,11 +1090,39 @@ class AnimeBot:
         return data
 
     def _clean_title(self, text):
-        # Strips EVERYTHING including Seasons for the 🎬 Title line
-        # Added quality and group tags for cleaner titles
-        noise = r'Dubbed|Hindi|Dual|Audio|Multi|Episodes?|Downloads?|Full|Series|Zon-E|HD|BluRay|FHD|SD|Season\s*\d+|S\d+|WEB-DL|HEVC|x264|x265|10bit|ESub|Fan|Softsubs|Subbed|Rip|HDTV|AAC|DDP|AVC'
-        cleaned = re.sub(noise, '', text, flags=re.I).replace('.', ' ').replace('_', ' ')
-        return re.sub(r'\s+', ' ', cleaned).strip()
+        # Universal Title Cleaning: Truncates at common noise structural markers
+        # 1. Remove bracketed/parenthetical content first
+        cleaned = re.sub(r'\(.*?\)|\[.*?\]', '', text)
+        
+        # 2. Structural markers where the actual anime name usually ends
+        markers = [
+            r'\s+in\s+.*', # "in Hindi-Tamil..."
+            r'\s+Season\s*\d+.*',
+            r'\s+S\d+.*',
+            r'\s+Episode\s*\d+.*',
+            r'\s+E\d+.*',
+            r'\s+\d{3,4}p.*', # "480p, 720p..."
+            r'\s+WEB-DL.*',
+            r'\s+Dual\s+Audio.*',
+            r'\s+Multi\s+Audio.*',
+            r'\s+Bluray.*',
+            r'\s+HDTV.*',
+            r'\|.*', # anything after a pipe
+            r'\s+-\s+.*' # anything after a dash with spaces
+        ]
+        
+        for m in markers:
+            match = re.search(m, cleaned, re.I)
+            if match:
+                cleaned = cleaned[:match.start()]
+                break # Stop at the first significant marker
+        
+        # 3. Final word-based cleaning for any loose noise left
+        noise = r'Dubbed|Hindi|Dual|Audio|Multi|Episodes?|Downloads?|Full|Series|Zon-E|HD|BluRay|FHD|SD|WEB-DL|HEVC|x264|x265|10bit|ESub|Fan|Softsubs|Subbed|Rip|HDTV|AAC|DDP|AVC'
+        cleaned = re.sub(noise, '', cleaned, flags=re.I).replace('.', ' ').replace('_', ' ')
+        
+        # Clean up separators and extra spaces
+        return re.sub(r'\s+', ' ', cleaned).strip(' -|._')
 
     def _clean_filename(self, text):
         # Smarter regex for site branding removal (HindiAnimeZone, RTI, Toono, etc.)
