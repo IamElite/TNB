@@ -1,3 +1,4 @@
+import os
 import re
 import time
 import logging
@@ -127,8 +128,33 @@ class HindiAnimeZone:
         return await asyncio.gather(*tasks)
 
     def resolve_filename(self, url: str, referer: Optional[str] = None, cookies: Optional[Dict] = None) -> Optional[str]:
-        """Placeholder to satisfy the bypasser interface in bot.py."""
-        return None
+        """Performs a HEAD request to find the actual filename from the server."""
+        if not url or not url.startswith("http"): return None
+        # Avoid resolving gate/hub links
+        if any(x in url.lower() for x in ["codedew", "multiquality", "leech", "drive.google"]): return None
+        
+        try:
+            from urllib.parse import urlparse, unquote
+            headers = {"User-Agent": random.choice(self.USER_AGENTS)}
+            if referer: headers["Referer"] = referer
+            
+            # Use synchronous requests for HEAD as it's cleaner for simple headers
+            res = requests.head(url, headers=headers, cookies=cookies, allow_redirects=True, timeout=10, verify=False)
+            cd = res.headers.get("Content-Disposition", "")
+            m = re.search(r'filename\*=utf-8\'\'(.+)|filename="(.+)"|filename=(.+)', cd, re.I)
+            if m:
+                fname = unquote(m.group(1) or m.group(2) or m.group(3))
+                return fname.strip('"; ')
+            
+            # Fallback to URL path
+            path = urlparse(res.url).path
+            fname = os.path.basename(path)
+            if fname and '.' in fname: return unquote(fname)
+            return None
+        except Exception as e:
+            logger.debug(f"Filename resolution failed: {e}")
+            return None
+
 
     def _extract_ep_name(self, ep_div: BeautifulSoup, fallback: str) -> str:
         tag = ep_div.select_one('.episode-title')

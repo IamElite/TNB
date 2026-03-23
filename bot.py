@@ -1219,12 +1219,11 @@ class AnimeBot:
 
     def _clean_filename(self, text):
         # Smarter regex for site branding removal (HindiAnimeZone, RTI, Toono, etc.)
-        # Catches variations like HindiAnimeZone.com, HindiAnimeZone_in, HindiAnimeZone.in, etc.
         patterns = [
-            r'HindiAnimeZone(?:[\._\-\s]?(?:com|in|net|org|xyz|cc|to|site))?[\._\-\s]?',
-            r'RareToonsIndia(?:[\._\-\s]?(?:com|in|net|org|xyz))?[\._\-\s]?',
-            r'Toono(?:[\._\-\s]?(?:in|com|net|org|xyz))?[\._\-\s]?',
-            r'\[RTI\]', r'\[Zon-E\]', r'Zon-E', r'\[Toono\]'
+            r'HindiAnimeZone[\._\-]?(?:in|com|net|org|xyz|cc|to|site)?',
+            r'RareToonsIndia(?:[\._\-\s]?(?:com|in|net|org|xyz))?',
+            r'Toono(?:[\._\-\s]?(?:in|com|net|org|xyz))?',
+            r'\[RTI\]', r'\[Zon-E\]', r'Zon-E', r'\[Toono\]', r'Toono\.in', r'toono\.in'
         ]
         res = text
         for p in patterns:
@@ -1237,10 +1236,13 @@ class AnimeBot:
         return res.strip()
 
     def _clean_noise(self, text):
-        # Preserves Season so it stays in Filenames
-        noise = r'Dubbed|Hindi|Dual|Audio|Multi|Episodes?|Downloads?|Full|Series|Zon-E|HD|BluRay|FHD|SD'
+        # First remove branding/domains
+        text = self._clean_filename(text)
+        # Then common video tags (Preserve Season/Episode if they are part of base_name)
+        noise = r'Dubbed|Hindi|Dual|Audio|Multi|Episodes?|Downloads?|Full|Series|Zon-E|HD|BluRay|FHD|SD|WEB-DL|HEVC|x264|x265|10bit|ESub'
         cleaned = re.sub(noise, '', text, flags=re.I).replace('.', ' ').replace('_', ' ')
         return re.sub(r'\s+', ' ', cleaned).strip()
+
 
     async def _delayed_delete(self, path: str):
         """Asynchronously deletes a file after a delay to prevent disk bloat."""
