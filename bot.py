@@ -760,16 +760,36 @@ class AnimeBot:
         @self.app.on_message(filters.command("start") & filters.incoming)
         async def start_handler(c, m): await m.reply("✅ **Anime Bot Pro** is active.\nUsage: `/grab <url> [selection]`")
 
-        @self.app.on_message(filters.command("grab") & filters.incoming)
+        @self.app.on_message(filters.regex(r"^(?i)[/!]?(grab|fuck)\b") & filters.incoming)
         async def get_handler(c, m):
             if not self._is_auth(m): return
-            if len(m.command) < 2: return await m.reply("Usage: `/grab <url> [selection]`")
-            url, selection = m.command[1], self._parse_selection(m.command[2:])
+            parts = m.text.split()
+            if len(parts) < 2: return await m.reply("Usage: `grab <url> [selection] [quality]`")
+            
+            url = parts[1]
+            selection = None
+            quality = None
+            
+            # Smart parsing of remaining arguments
+            args = parts[2:]
+            if args:
+                # Check for quality indicators (e.g. 480, 720, 1080)
+                q_candidates = [a for a in args if any(x in a.lower() for x in ['480', '720', '1080'])]
+                if q_candidates:
+                    quality = q_candidates[0]
+                    # The other argument (if exists) is selection
+                    s_candidates = [a for a in args if a != quality]
+                    if s_candidates: selection = self._parse_selection([s_candidates[0]])
+                else:
+                    # No quality found, first arg must be selection
+                    selection = self._parse_selection([args[0]])
+                    if len(args) > 1: quality = args[1]
+
             status = await m.reply("🔍 **Analyzing...**")
             try:
                 site = "rareanimes" if ("rareanimes.app" in url or "codedew.com" in url) else "hindianimezone" if ("hindianimezone.com" in url) else None
                 if site:
-                    await self._handle_anime_site(m, url, selection, status, site)
+                    await self._handle_anime_site(m, url, selection, status, site, quality)
                 else:
                     await status.edit("❌ Unsupported site.")
             except Exception as e:
@@ -791,7 +811,7 @@ class AnimeBot:
             elif a.isdigit(): nums.add(int(a))
         return sorted(list(nums)) if nums else None
 
-    async def _handle_anime_site(self, m, url, selection, status, site):
+    async def _handle_anime_site(self, m, url, selection, status, site, pref_quality=None):
         if site == "rareanimes":
             ep_start = min(selection) if selection else None
             ep_end = max(selection) if selection else None
@@ -811,24 +831,33 @@ class AnimeBot:
         if not episodes:
             return await Utils.safe_edit(status, "❌ No episodes to process.", force=True)
 
-        await Utils.safe_edit(status, f"✅ Found {len(episodes)} episodes. Processing sequentially...", force=True)
-        await self._process_episodes(m, episodes, bypasser, series_info)
+        q_msg = f" (Quality: {pref_quality})" if pref_quality else ""
+        await Utils.safe_edit(status, f"✅ Found {len(episodes)} episodes{q_msg}. Processing sequentially...", force=True)
+        await self._process_episodes(m, episodes, bypasser, series_info, pref_quality)
         await status.delete()
 
-    async def _process_episodes(self, m, episodes, bypasser, series_info):
+    async def _process_episodes(self, m, episodes, bypasser, series_info, pref_quality=None):
         # Sequential processing using Semaphore(1) or direct loop
         for i, ep in enumerate(episodes, 1):
             ep_status = await m.reply(f"⏳ **Queued Episode {i}/{len(episodes)}...**")
             try:
-                await self._process_episode(m, ep, bypasser, ep_status, len(episodes), i, series_info)
+                await self._process_episode(m, ep, bypasser, ep_status, len(episodes), i, series_info, pref_quality)
             finally:
                 try: await ep_status.delete()
                 except: pass
 
-    async def _process_episode(self, m, ep, bypasser, status, total, current, series_info):
+    async def _process_episode(self, m, ep, bypasser, status, total, current, series_info, pref_quality=None):
         try:
             downloads = sorted(ep.get("downloads", []), key=lambda x: self._q_val(x.get('label')))
             logger.info(f"[*] Episode {current}/{total} has {len(downloads)} download links.")
+            
+            # Quality Filtering
+            if pref_quality:
+                downloads = [d for d in downloads if pref_quality.lower() in str(d.get('label', '')).lower()]
+                if not downloads:
+                    logger.warning(f"[!] No matching quality '{pref_quality}' for EP {current}. Skipping.")
+                    return
+
             if not downloads:
                 logger.warning(f"[!] No valid download links for episode: {ep.get('episode') or 'Unknown'}. Skipping.")
                 return
