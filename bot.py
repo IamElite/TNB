@@ -1189,7 +1189,7 @@ class AnimeBot:
         t = os.path.join(Config.THUMB_DIR, thumb_name)
         # Using user's preferred ffmpeg arguments: seek 5s, scale 320:-1
         cmd = [
-            "ffmpeg", "-y", "-ss", "00:00:05", "-i", path, 
+            "ffmpeg", "-y", "-v", "error", "-ss", "00:00:05", "-i", path, 
             "-vframes", "1", "-vf", "scale=320:-1", "-q:v", "2", t
         ]
         try:
@@ -1253,7 +1253,7 @@ class AnimeBot:
             # Map video and specific audio. DO NOT MAP 0:s (subtitles) as per user request.
             # Applied custom metadata tagging for branding
             cmd = [
-                "ffmpeg", "-y", "-i", fpath,
+                "ffmpeg", "-y", "-v", "error", "-i", fpath,
                 "-map", "0:v", "-map", f"0:{hindi_idx}",
                 "-c", "copy",
                 "-metadata", f"title={Config.METADATA_KEY}",
