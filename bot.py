@@ -1097,21 +1097,23 @@ class AnimeBot:
         return re.sub(r'\s+', ' ', cleaned).strip()
 
     def _clean_filename(self, text):
-        # User requested specific patterns to remove from filenames (RTI, Toono, HindiAnimeZone)
+        # Smarter regex for site branding removal (HindiAnimeZone, RTI, Toono, etc.)
+        # Catches variations like HindiAnimeZone.com, HindiAnimeZone_in, HindiAnimeZone.in, etc.
         patterns = [
-            r'\[RTI\]', r'\[RareToonsIndia\]', r'RareToonsIndia',
-            r'\[Toono\]', r'\[toono\]', r'Toono\.in', r'toono\.in', r'Toono', r'toono',
-            r'\[HindiAnimeZone\.com\]', r'\[ HindiAnimeZone\.com \]', r'HindiAnimeZone\.com'
+            r'HindiAnimeZone(?:[\._\-\s]?(?:com|in|net|org|xyz|cc|to|site))?[\._\-\s]?',
+            r'RareToonsIndia(?:[\._\-\s]?(?:com|in|net|org|xyz))?[\._\-\s]?',
+            r'Toono(?:[\._\-\s]?(?:in|com|net|org|xyz))?[\._\-\s]?',
+            r'\[RTI\]', r'\[Zon-E\]', r'Zon-E', r'\[Toono\]'
         ]
         res = text
         for p in patterns:
             res = re.sub(p, '', res, flags=re.I)
         
-        # Clean up extra characters
-        res = re.sub(r'_+', ' ', res)
+        # Final cleanup for hanging separators and empty brackets
         res = re.sub(r'\[\s*\]', '', res)
-        res = re.sub(r'\s+', ' ', res)
-        return res.strip('_ ')
+        res = re.sub(r'\(\s*\)', '', res)
+        res = re.sub(r'[\s_\.\-]+', ' ', res)
+        return res.strip()
 
     def _clean_noise(self, text):
         # Preserves Season so it stays in Filenames
