@@ -873,12 +873,8 @@ class AnimeBot:
                     if se_str and (se_str in cleaned_name.upper() or f"SEASON {int(se_str[1:])}" in cleaned_name.upper()):
                         se_str = ""
                         
-                    fname = f"{Config.METADATA_KEY} {cleaned_name} {se_str} {ep_str} [{label.upper()}].mp4"
+                    fname = f"{cleaned_name} {se_str} {ep_str} [{label.upper()}].mp4"
                     fname = re.sub(r'\s+', ' ', fname).strip()
-                
-                # Prefix with METADATA_KEY if not already present
-                if not fname.startswith(Config.METADATA_KEY):
-                    fname = f"{Config.METADATA_KEY} {fname}"
                 
                 fpath = os.path.join(req_dir, re.sub(r'[\\/*?:"<>|]', "", fname).strip())
                 logger.info(f"[*] Target File: {fpath}")
