@@ -32,6 +32,7 @@ class Config:
     BOT_TOKEN = os.environ.get("BOT_TOKEN", "7810985319:AAHSaD-YlHThm2JPoOY_vnJLs9jXpaWs4ts")
     OWNER_ID = int(os.environ.get("OWNER_ID", 7074383232))
     AUTH_CHAT = int(os.environ.get("AUTH_CHAT", -1003192464251))
+    METADATA_KEY = "[ @SyntaxRealm ]"
     
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
@@ -48,10 +49,6 @@ class Config:
     # Concurrency Constants
     HUB_MAX_WORKERS = 5
     MIRROR_MAX_WORKERS = 8
-
-    # Metadata & Caption Customization
-    METADATA_KEY = "[ @SyntaxRealm ]"
-    CREDIT_TEXT = "This video encoded by: [ @SyntaxRealm ]\nUse Bot: [ @SyntaxRealm ]"
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -876,8 +873,12 @@ class AnimeBot:
                     if se_str and (se_str in cleaned_name.upper() or f"SEASON {int(se_str[1:])}" in cleaned_name.upper()):
                         se_str = ""
                         
-                    fname = f"{cleaned_name} {se_str} {ep_str} [{label.upper()}].mp4"
+                    fname = f"{Config.METADATA_KEY} {cleaned_name} {se_str} {ep_str} [{label.upper()}].mp4"
                     fname = re.sub(r'\s+', ' ', fname).strip()
+                
+                # Prefix with METADATA_KEY if not already present
+                if not fname.startswith(Config.METADATA_KEY):
+                    fname = f"{Config.METADATA_KEY} {fname}"
                 
                 fpath = os.path.join(req_dir, re.sub(r'[\\/*?:"<>|]', "", fname).strip())
                 logger.info(f"[*] Target File: {fpath}")
@@ -1041,14 +1042,7 @@ class AnimeBot:
         split_files = []
         for i in range(parts):
             out = f"{path}.part{i+1}.mp4"
-            # Injecting MediaInfo credits during split
-            cmd = [
-                "ffmpeg", "-v", "error", "-i", path, "-ss", str(i*part_dur), "-t", str(part_dur), 
-                "-map", "0", "-c", "copy", "-movflags", "+faststart", 
-                "-metadata", f"Credit={Config.CREDIT_TEXT}",
-                "-metadata", f"comment={Config.CREDIT_TEXT}",
-                out, "-y"
-            ]
+            cmd = ["ffmpeg", "-v", "error", "-i", path, "-ss", str(i*part_dur), "-t", str(part_dur), "-c", "copy", "-movflags", "+faststart", out, "-y"]
             proc = await asyncio.create_subprocess_exec(*cmd)
             await proc.wait()
             if os.path.exists(out): split_files.append(out)
@@ -1214,15 +1208,16 @@ class AnimeBot:
             out_path = fpath + ".hin" + ext
             
             # Map video and specific audio. DO NOT MAP 0:s (subtitles) as per user request.
-            # Inject metadata from Config
-            title_meta = f"{os.path.basename(fpath)} {Config.METADATA_KEY}"
+            # Applied custom metadata tagging for branding
             cmd = [
-                "ffmpeg", "-y", "-i", fpath, 
-                "-map", "0:v", "-map", f"0:{hindi_idx}", 
-                "-metadata", f"title={title_meta}",
-                "-metadata", f"comment={Config.METADATA_KEY}",
+                "ffmpeg", "-y", "-i", fpath,
+                "-map", "0:v", "-map", f"0:{hindi_idx}",
+                "-c", "copy",
+                "-metadata", f"title={Config.METADATA_KEY}",
                 "-metadata", f"artist={Config.METADATA_KEY}",
-                "-c", "copy", "-map_metadata", "0", out_path
+                "-metadata:s:v:0", f"title={Config.METADATA_KEY}",
+                "-metadata:s:a:0", f"title={Config.METADATA_KEY}",
+                "-map_metadata", "0", out_path
             ]
             proc = await asyncio.create_subprocess_exec(*cmd)
             await proc.wait()
