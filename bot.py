@@ -589,7 +589,8 @@ class Utils:
             ram_str = f"{Utils.human_bytes(mem.used)} / {Utils.human_bytes(mem.total)}"
             
             disk = psutil.disk_usage('/')
-            disk_str = f"{Utils.human_bytes(disk.free)} / {Utils.human_bytes(disk.total)}"
+            disk_str = f"{Utils.human_bytes(disk.used)} / {Utils.human_bytes(disk.total)}"
+            free_str = f"{Utils.human_bytes(disk.free)} / {Utils.human_bytes(disk.total)}"
             
             # Net Speed Logic
             now = time.time()
@@ -607,7 +608,7 @@ class Utils:
                 Utils._NET_IO = io
                 Utils._NET_TIME = now
                 
-            return cpu, ram_str, net_mbps, disk_str
+            return cpu, ram_str, net_mbps, free_str
         except Exception as e:
             logger.error(f"Error in get_system_stats: {e}")
             return 0, "? / ?", 0, "? / ?"
@@ -619,8 +620,8 @@ class Utils:
         return Utils.time_formatter(remaining * 1000)
 
     @staticmethod
-    def format_progress(filename, status_icon, status_text, p, speed, curr_size, tot_size, start_time):
-        cpu, ram_str, net_mbps, disk_str = Utils.get_system_stats()
+    def format_progress(filename, status_icon, status_text, p, speed, curr_size, tot_size, start_time, task_id=None, current_idx=0, total_eps=0):
+        cpu, ram_str, net_mbps, free_str = Utils.get_system_stats()
         eta = Utils.get_eta(curr_size, tot_size, speed)
         bar = Utils.progress_bar(p, l=10)
         
@@ -629,17 +630,25 @@ class Utils:
         sz_curr = Utils.human_bytes(curr_size)
         sz_tot = Utils.human_bytes(tot_size) if tot_size else "???"
         
-        # Box drawing UI
+        # Box drawing UI as requested by user
         res = f"🚀 `{filename}`\n\n"
-        res += f"┌ Status  : {status_icon} **{status_text}** {status_icon}\n"
+        res += f"┌ Status  : {status_icon} **{status_text} {current_idx}/{total_eps}** {status_icon}\n"
         res += f"├ {bar} **{p:.1f}%**\n"
-        res += f"├ ⚡ **Speed**   : `{spd_str}`\n"
-        res += f"├ 📦 **Size**    : `{sz_curr} / {sz_tot}`\n"
-        res += f"└ ⏱ **ETA**     : `{eta}`\n\n"
-        res += f"🖥 **CPU**: `{cpu}%` | 🌐 **Net**: `{net_mbps:.1f} Mbps`"
-        res += f"\n💾 **RAM**: `{ram_str}`"
-        res += f"\n🆓 **Free**: `{disk_str}`"
+        res += f"├ ⚡ Speed   : `{spd_str}`\n"
+        res += f"├ 📦 Size    : `{sz_curr} / {sz_tot}`\n"
+        res += f"├ ⏱ ETA     : `{eta}`\n"
         
+        if task_id:
+            res += f"└ /c_{task_id}\n"
+            res += f"--------------------\n"
+            res += f"stop branch : /b_{task_id}\n"
+            res += f"--------------------\n\n"
+        else:
+            res += f"└ ⏱ ETA     : `{eta}`\n\n"
+
+        res += f"🖥 CPU: `{cpu}%` | 🌐 Net: `{net_mbps:.1f} Mbps`\n"
+        res += f"💾 RAM: `{ram_str}`\n"
+        res += f"🆓 Free: `{free_str}`"
         return res
 
     @staticmethod
@@ -769,6 +778,8 @@ class Utils:
 
 # --- CORE ENGINE ---
 class AnimeBot:
+    TASK_STATE = {} # {task_id: {"canceled": bool, "stop_branch": bool}}
+
     def __init__(self):
         self.app = Client(
             "anime_bot",
@@ -786,6 +797,26 @@ class AnimeBot:
     def _setup_handlers(self):
         @self.app.on_message(filters.command("start") & filters.incoming)
         async def start_handler(c, m): await m.reply("✅ **Anime Bot Pro** is active.\nUsage: `/grab <url> [selection]`")
+
+        # Stop/Cancel Handlers
+        @self.app.on_message(filters.regex(r'^/c_(\w+)$') & filters.private)
+        async def cancel_task_handler(_, m):
+            if not self._is_auth(m): return
+            tid = m.matches[0].group(1)
+            if tid in self.TASK_STATE:
+                self.TASK_STATE[tid]["canceled"] = True
+                await m.reply(f"🛑 **Cancellation requested for task {tid}...**")
+            else: await m.reply("❌ Task not found or already finished.")
+
+        @self.app.on_message(filters.regex(r'^/b_(\w+)$') & filters.private)
+        async def stop_branch_handler(_, m):
+            if not self._is_auth(m): return
+            tid = m.matches[0].group(1)
+            if tid in self.TASK_STATE:
+                self.TASK_STATE[tid]["stop_branch"] = True
+                self.TASK_STATE[tid]["canceled"] = True
+                await m.reply(f"🚫 **Stop Branch requested for {tid}. Terminates after current EP.**")
+            else: await m.reply("❌ Batch not found or already finished.")
 
         @self.app.on_message(filters.regex(r"^(?i)[/!]?(grab|fuck)\b") & filters.incoming)
         async def get_handler(c, m):
@@ -862,13 +893,20 @@ class AnimeBot:
 
         if not episodes:
             return await Utils.safe_edit(status, "❌ No episodes to process.", force=True)
-
-        q_msg = f" (Quality: {pref_quality})" if pref_quality else ""
-        await Utils.safe_edit(status, f"✅ Found {len(episodes)} episodes{q_msg}. Ultra-High Speed active...", force=True)
-        await self._process_episodes(m, episodes, bypasser, series_info, pref_quality)
+        # Generate unique task ID
+        task_id = "T" + uuid.uuid4().hex[:6].upper()
+        self.TASK_STATE[task_id] = {"canceled": False, "stop_branch": False}
+        
+        try:
+            q_msg = f" (Quality: {pref_quality})" if pref_quality else ""
+            await Utils.safe_edit(status, f"✅ Found {len(episodes)} episodes{q_msg}. Task ID: {task_id}", force=True)
+            await self._process_episodes(m, episodes, bypasser, series_info, pref_quality, task_id)
+        finally:
+            if task_id in self.TASK_STATE:
+                del self.TASK_STATE[task_id]
         await status.delete()
 
-    async def _process_episodes(self, m, episodes, bypasser, series_info, pref_quality=None):
+    async def _process_episodes(self, m, episodes, bypasser, series_info, pref_quality=None, task_id=None):
         # JIT Resolution: Only overlaps 'link resolution' in background. 
         # Download and Upload stay sequential to protect storage and network speed.
         next_res_task = None
@@ -899,6 +937,11 @@ class AnimeBot:
                 next_res_task = asyncio.create_task(safe_resolve(episodes[i+1]))
 
             # 3. Process current episode
+            if self.TASK_STATE.get(task_id, {}).get("stop_branch"):
+                logger.info(f"[*] Stop Branch detected for {task_id}. Breaking.")
+                await m.reply(f"🚫 **Stop Branch:** Batch terminated after Ep {i}.")
+                break
+
             ep_status = await m.reply(f"⏳ **Processing Episode {i+1}/{len(episodes)}...**")
             try:
                 downloads = ep.get('downloads', [])
@@ -916,15 +959,17 @@ class AnimeBot:
                     continue
 
                 for label, dl in unique_dl.items():
+                    if self.TASK_STATE.get(task_id, {}).get("canceled"):
+                        logger.info(f"[*] Task {task_id} canceled. Skipping quality.")
+                        break
+
                     logger.info(f"[*] Processing Quality: {label} for Ep {i+1}")
-                    await Utils.safe_edit(ep_status, f"⏬ **Downloading {label} (Ep {i+1})...**")
-                    
-                    # 4. Sequential DL -> Split -> UL for THIS quality
-                    paths, ep_series_info = await self._prepare_quality(m, ep, dl, bypasser, ep_status, len(episodes), i+1, series_info)
+                    # Prepare (Resolve Mirror + Download + Split)
+                    paths, ep_series_info = await self._prepare_quality(m, ep, dl, bypasser, ep_status, len(episodes), i+1, series_info, task_id)
                     
                     if paths:
-                        await Utils.safe_edit(ep_status, f"📤 **Uploading {label} (Ep {i+1})...**")
-                        await self._upload_episode(m, paths, ep_status, len(episodes), i+1, ep_series_info)
+                        if self.TASK_STATE.get(task_id, {}).get("canceled"): break
+                        await self._upload_episode(m, paths, ep_status, len(episodes), i+1, ep_series_info, task_id)
                     
             except Exception as e:
                 logger.error(f"Failed processing Ep {i+1}: {e}")
@@ -941,7 +986,7 @@ class AnimeBot:
             return usage.free > (1.5 * 1024 * 1024 * 1024) # 1.5GB safety margin
         except: return True
 
-    async def _prepare_quality(self, m, ep, dl, bypasser, status, total, current, series_info):
+    async def _prepare_quality(self, m, ep, dl, bypasser, status, total, current, series_info, task_id=None):
         """Resolves, downloads, filters, and splits a SINGLE quality. Returns (list_of_paths, series_info)."""
         try:
             req_dir = os.path.join(Config.DOWNLOAD_DIR, str(m.id))
@@ -965,7 +1010,8 @@ class AnimeBot:
                 fname = f"{self._clean_noise(base_name)} {se_str} {ep_str} [{label.upper()}].mp4"
             
             fpath = os.path.join(req_dir, re.sub(r'[\\/*?:"<>|]', "", fname).strip())
-            if await self._download_manager(url, fpath, status, meta):
+            if await self._download_manager(url, fpath, status, meta, task_id, current, total):
+                if self.TASK_STATE.get(task_id, {}).get("canceled"): return None, None
                 await self._filter_hindi_audio(fpath, status)
                 paths = await self._split_video(fpath, status)
                 # Cleanup original file if it was split or faststarted
@@ -978,13 +1024,16 @@ class AnimeBot:
             logger.error(f"Prepare Quality Error: {e}")
             return None, None
 
-    async def _upload_episode(self, m, paths, status, total, current, series_info):
+    async def _upload_episode(self, m, paths, status, total, current, series_info, task_id=None):
         """Uploads paths and schedules deletion."""
         for p in paths:
-            await self._upload_file(m, p, status, current, total, os.path.basename(p), series_info)
+            if self.TASK_STATE.get(task_id, {}).get("canceled"):
+                logger.info(f"[*] Task {task_id} canceled. Skipping upload.")
+                break
+            await self._upload_file(m, p, status, current, total, os.path.basename(p), series_info, task_id)
             asyncio.create_task(self._delayed_delete(p))
 
-    async def _download_manager(self, url, path, status, meta):
+    async def _download_manager(self, url, path, status, meta, task_id=None, current_idx=0, total_eps=0):
         ua, cookies = meta.get('user_agent', Config.DEFAULT_UA), meta.get('cookies', {})
         referer = meta.get('referer', "https://swift.multiquality.click/")
         is_sensitive = any(x in url.lower() for x in ["monster", "swift", "multiquality", "downlead"])
@@ -993,22 +1042,18 @@ class AnimeBot:
             "User-Agent": ua,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
             "Accept-Language": "en-US,en;q=0.9",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "cross-site",
-            "Sec-Fetch-User": "?1",
-            "Upgrade-Insecure-Requests": "1"
+            "Referer": referer,
+            "Connection": "keep-alive"
         }
-        if referer: headers["Referer"] = referer
-
+        
         if is_sensitive:
             logger.info(f"[*] Warming up mirror for sensitive link: {urlparse(url).netloc}")
             await self._warmup_mirror(f"https://{urlparse(url).netloc}/", ua, cookies)
         
-        conn = "16" # Force 16 connections to maximize speed
+        conn = "16" 
         directory, filename = os.path.split(path)
         
-        cmd = ["aria2c", "-x", conn, "-s", conn, "-j", conn, "--min-split-size=1M", "-d", directory, "-o", filename, "--user-agent", ua, "--check-certificate=false"]
+        cmd = ["aria2c", "-x", conn, "-s", conn, "-j", conn, "--min-split-size=1M", "-d", directory, "-o", filename, "--user-agent", ua, "--check-certificate=false", "--summary-interval=1"]
         for k, v in headers.items():
             if k.lower() not in ["user-agent", "cookie"]:
                 cmd.extend(["--header", f"{k}: {v}"])
@@ -1017,94 +1062,110 @@ class AnimeBot:
         logger.info(f"[*] Starting aria2c: {' '.join(cmd[:10])}...")
         try:
             proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            start_time = time.time()
             while True:
+                if self.TASK_STATE.get(task_id, {}).get("canceled"):
+                    logger.info(f"[*] Aria2c Cancelled for {task_id}")
+                    try: proc.terminate()
+                    except: pass
+                    return False
+
                 line = await proc.stdout.readline()
                 if not line: break
                 line_str = line.decode('utf-8', 'ignore')
-                # Improved regex for aria2c: [#2089ad 4.0MiB/3.8GiB(0%) CN:1 SPD:6.2MiB/s ETA:10m31s]
-                m = re.search(r'([\d\.]+[KMG]i?B)/([\d\.]+[KMG]i?B)\((\d+)%\).*?SPD:([\d\.]+[KMG]i?B).*?ETA:([\w\d]+)', line_str)
+                
+                # [#gid 18MiB/198MiB(9%) CN:1 SPD:1.2MiB/s ETA:2m27s]
+                m = re.search(r'\[#\w+\s+([\d.]+[\w]+)/([\d.]+[\w]+)\(([\d.]+)%\)\s+CN:\d+\s+SPD:([\d.]+[\w]+)(?:\s+ETA:([\w]+))?\]', line_str)
                 if m:
                     curr_sz_str, tot_sz_str, p_str, spd_str, eta_str = m.groups()
-                    p = int(p_str)
-                    fname = os.path.basename(path)
+                    p = float(p_str)
                     
-                    # Compute system stats and net
-                    cpu, ram, net_mbps, net_mib = Utils.get_system_stats()
-                    bar = Utils.progress_bar(p, l=10)
+                    def to_bytes(s):
+                        if not s: return 0
+                        units = {"B": 1, "K": 1024, "M": 1024**2, "G": 1024**3}
+                        val = re.sub(r'[^\d.]', '', s)
+                        unit = re.sub(r'[\d.]', '', s).upper()[:1]
+                        return float(val) * units.get(unit, 1)
+
+                    speed = to_bytes(spd_str)
+                    curr_size = to_bytes(curr_sz_str)
+                    tot_size = to_bytes(tot_sz_str)
                     
-                    msg = f"🚀 `{fname}`\n\n"
-                    msg += f"┌ Status  : ⏬ **Downloading** ⏬\n"
-                    msg += f"├ {bar} **{p}%**\n"
-                    msg += f"├ ⚡ **Speed**   : `{spd_str}/s`\n"
-                    msg += f"├ 📦 **Size**    : `{curr_sz_str} / {tot_sz_str}`\n"
-                    msg += f"└ ⏱ **ETA**     : `{eta_str}`\n\n"
-                    msg += f"🖥 **CPU**: `{cpu}%` | 💾 **RAM**: `{int(ram)}MB`"
-                    msg += f"\n🌐 **Net**: `{net_mbps:.1f} Mbps` | ⬇ `{net_mib:.1f} MiB/s`"
-                    
+                    msg = Utils.format_progress(os.path.basename(path), "⏬", "Downloading", p, speed, curr_size, tot_size, start_time, task_id, current_idx, total_eps)
                     await Utils.safe_edit(status, msg)
                 elif "ERROR" in line_str.upper():
                     logger.error(f"[!] aria2c error: {line_str.strip()}")
-            await proc.wait()
             
+            await proc.wait()
             if proc.returncode == 0 and os.path.exists(path) and os.path.getsize(path) > 1000:
-                logger.info(f"[*] aria2c success: {path}")
                 return True
             
-            logger.warning(f"[!] aria2c failed (Code {proc.returncode}). Trying stable curl_cffi fallback...")
-            return await self._download_requests(url, path, status, headers, cookies)
+            logger.warning(f"[!] aria2c failed. Trying curl_cffi fallback...")
+            return await self._download_requests(url, path, status, headers, cookies, task_id, current_idx, total_eps)
         except Exception as e:
-            logger.error(f"[!] aria2c start failed: {e}. Trying fallback...")
-            return await self._download_requests(url, path, status, headers, cookies)
+            logger.error(f"[!] aria2c exception: {e}")
+            return await self._download_requests(url, path, status, headers, cookies, task_id, current_idx, total_eps)
 
-    async def _download_requests(self, url, path, status, headers, cookies):
+    async def _download_requests(self, url, path, status, headers, cookies, task_id=None, current_idx=0, total_eps=0):
         try:
-            logger.info(f"[*] Starting chunked curl_cffi download: {url[:60]}...")
-            # Using curl_cffi for browser-grade impersonation in fallback
             with currequests.Session(impersonate="chrome124") as s:
                 s.headers.update(headers)
                 if cookies: s.cookies.update(cookies)
-                
-                # In curl_cffi, responses are not necessarily context managers
                 r = s.get(url, stream=True, timeout=30, verify=False)
                 r.raise_for_status()
                 total = int(r.headers.get('content-length', 0))
-                curr = 0
-                last_up = 0
-                start_t = time.time()
+                curr, last_up, start_t = 0, 0, time.time()
                 with open(path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=1 * 1024 * 1024):
+                        if self.TASK_STATE.get(task_id, {}).get("canceled"): return False
                         if chunk:
                             f.write(chunk)
                             curr += len(chunk)
-                            if time.time() - last_up > Config.PROGRESS_UPDATE_INTERVAL:
+                            if time.time() - last_up > 3.0:
                                 p = curr * 100 / total if total else 0
-                                fname = os.path.basename(path)
                                 speed = curr / (time.time() - start_t) if (time.time() - start_t) > 0 else 0
-                                
-                                msg = Utils.format_progress(fname, "⏬", "Downloading (Fallback)", p, speed, curr, total, start_t)
+                                msg = Utils.format_progress(os.path.basename(path), "⏬", "Downloading (Slow)", p, speed, curr, total, start_t, task_id, current_idx, total_eps)
                                 await Utils.safe_edit(status, msg)
                                 last_up = time.time()
             return os.path.exists(path) and os.path.getsize(path) > 1000
         except Exception as e:
-            logger.error(f"[!] curl_cffi fallback failed: {e}")
+            logger.error(f"[!] Fallback failed: {e}")
             return False
 
-    async def _upload_file(self, m, fpath, status, current, total, label, series_info):
-        w, h, dur = await self._get_video_meta(fpath)
-        cap = self._make_caption(fpath, os.path.getsize(fpath), dur, series_info)
-        start = time.time()
-        thumb = None
+    async def _upload_file(self, m, fpath, status, current, total, fname, series_info, task_id=None):
         try:
+            w, h, dur = await self._get_video_meta(fpath)
+            cap = self._make_caption(fpath, os.path.getsize(fpath), dur, series_info)
+            cap += f"\n\n🆔 Task: `{task_id}`"
+            start_time = time.time()
             thumb = await self._make_thumb(fpath, dur)
-            fname = os.path.basename(fpath)
-            await self.app.send_video(m.chat.id, fpath, caption=cap, duration=dur, width=w, height=h, thumb=thumb,
-                                    supports_streaming=True,
-                                    progress=self._upload_progress, progress_args=(f"**Uploading {current}/{total}**", status, start, fname))
-        except Exception as e: logger.error(f"Upload fail: {e}")
-        finally:
-            if thumb and os.path.exists(thumb):
-                try: os.remove(thumb)
-                except: pass
+            try:
+                await self.app.send_video(
+                    chat_id=m.chat.id,
+                    video=fpath,
+                    caption=cap,
+                    duration=dur,
+                    width=w,
+                    height=h,
+                    thumb=thumb,
+                    supports_streaming=True,
+                    progress=self._upload_progress,
+                    progress_args=(status, start_time, fname, task_id, current, total)
+                )
+            finally:
+                if thumb and os.path.exists(thumb): os.remove(thumb)
+        except Exception as e:
+            logger.error(f"Upload Error: {e}")
+
+    async def _upload_progress(self, current, total, status, start_time, fname, task_id=None, current_idx=0, total_eps=0):
+        if self.TASK_STATE.get(task_id, {}).get("canceled"):
+            raise Exception("Upload Canceled by User")
+        now = time.time()
+        p = (current * 100 / total) if total else 0
+        speed = current / (now - start_time) if (now - start_time) > 0 else 0
+        msg = Utils.format_progress(fname, "📤", "Uploading", p, speed, current, total, start_time, task_id, current_idx, total_eps)
+        await Utils.safe_edit(status, msg)
+         
 
     async def _split_video(self, path, status=None):
         size = os.path.getsize(path)
