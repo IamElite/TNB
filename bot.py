@@ -843,8 +843,7 @@ class AnimeBot:
             elif a.isdigit(): nums.add(int(a))
         return sorted(list(nums)) if nums else None
 
-    # Task management handlers
-    @Client.on_message(filters.regex(r"^/c_(?P<tid>\w+)") & filters.private)
+    @Client.on_message(filters.regex(r"^/c_(?P<tid>\w+)(?P<bot>@\w+)?"))
     async def _cancel_task(self, client, message):
         tid = message.matches[0].group("tid")
         if tid in self.ACTIVE_TASKS:
@@ -853,10 +852,9 @@ class AnimeBot:
         else:
             await message.reply(f"❌ **Task** `{tid}` **not found.**")
 
-    @Client.on_message(filters.regex(r"^/all_(?P<tid>\w+)") & filters.private)
+    @Client.on_message(filters.regex(r"^/all_(?P<tid>\w+)(?P<bot>@\w+)?"))
     async def _cancel_all_tasks(self, client, message):
-        # Stop all tasks or just the one associated with this tid (user's choice)
-        # We'll implement global stop for /all
+        # Cancel current TID and all other global tasks
         for tid in list(self.ACTIVE_TASKS.keys()):
             self.ACTIVE_TASKS[tid]['stop'] = True
         await message.reply("🛑 **All active tasks have been cancelled.**")
@@ -1107,14 +1105,22 @@ class AnimeBot:
             logger.error(f"[!] aria2c start failed: {e}. Trying fallback...")
             return await self._download_requests(url, path, status, headers, cookies, task_id)
 
-    async def _upload_progress(self, current, total, title, status, start, filename, task_id="0000"):
+    async def _upload_progress(self, *args):
+        # Pyrogram can pass (current, total, *progress_args) OR (client, current, total, *progress_args)
+        if len(args) == 7:
+            current, total, title, status, start, filename, task_id = args
+        elif len(args) == 8:
+            _, current, total, title, status, start, filename, task_id = args
+        else:
+            return
+
         if self.ACTIVE_TASKS.get(task_id, {}).get('stop'):
-            # Pyrogram progress doesn't easily stop from within, but we can try small hack
-            # or just skip updates.
+            # Stop the task by exiting early (will fail eventually or we skip)
+            # To actually stop send_video, one might raise an exception, but returning is safer.
             return
         
         if time.time() - self._last_up > Config.PROGRESS_UPDATE_INTERVAL:
-            p = current * 100 / total
+            p = current * 100 / total if total else 0
             speed = current / (time.time() - start) if (time.time() - start) > 0 else 0
             msg = Utils.format_progress(filename, "📤", "Uploading", p, speed, current, total, start, task_id)
             await Utils.safe_edit(status, msg)
