@@ -1269,11 +1269,28 @@ class AnimeBot:
         q = re.search(r'(\d{3,4}p)', path, re.I)
         q_str = q.group(1).upper() if q else "720P"
         
+        # Detect Language from path (e.g. [Hindi], [Dual-Audio])
+        lang = "Hindi"
+        if any(x in path.lower() for x in ["dual", "multi"]): lang = "Dual Audio"
+
+        # MOVIE FORMAT
+        if info.get('is_movie'):
+            yr_str = f" ({info['year']})" if info.get('year') else ""
+            cap = f"🎬 **{name}**{yr_str}\n╭━━━━━━━━━━━━━━━━━━━╮\n"
+            cap += f"│ 🍿 **Type:** Movie\n"
+            cap += f"│ 🌐 **Language:** {lang}\n"
+            cap += f"│ 📊 **Quality:** {q_str}\n"
+            cap += f"│ 📦 **Size:** {Utils.human_bytes(size)}\n"
+            cap += f"│ ⏱️ **Duration:** {Utils.time_formatter(dur*1000)}\n"
+            cap += f"╰━━━━━━━━━━━━━━━━━━━╯"
+            return cap
+
+        # EPISODE FORMAT
         cap = f"🎬 **{name}**\n╭━━━━━━━━━━━━━━━━━━━╮\n"
         if season:
             cap += f"│ 🏝️ **Season**    : {season}\n"
         cap += f"│ 📺 **Episode**   : {info['episode'] or 'N/A'}\n"
-        cap += f"│ 🌐 **Language**  : Hindi\n"
+        cap += f"│ 🌐 **Language**  : {lang}\n"
         cap += f"│ 📊 **Quality**   : {q_str}\n"
         cap += f"│ 📦 **Size**      : {Utils.human_bytes(size)}\n"
         cap += f"│ ⏱️ **Duration**  : {Utils.time_formatter(dur*1000)}\n"
@@ -1281,7 +1298,7 @@ class AnimeBot:
         return cap
 
     def _parse_filename(self, text):
-        data = {"name": "Unknown", "season": None, "episode": None, "year": None}
+        data = {"name": "Unknown", "season": None, "episode": None, "year": None, "is_movie": False}
         yr = re.search(r'\((19|20)\d{2}\)', text)
         if yr: data["year"] = yr.group(0).strip('()')
         
@@ -1291,6 +1308,11 @@ class AnimeBot:
         
         e = re.search(r'E(\d+)|Episode\s*(\d+)', text, re.I)
         if e: data["episode"] = (e.group(1) or e.group(2)).zfill(2)
+        
+        # Movie detection: if it explicitly says movie or matches anime movie context
+        if "movie" in text.lower() or (not data["episode"] and not data["season"]):
+            data["is_movie"] = True
+            
         data["name"] = self._clean_noise(re.sub(r'\(.*?\)|\[.*?\]', '', text.split('.')[0]))
         return data
 
