@@ -796,36 +796,49 @@ class AnimeBot:
         @self.app.on_message(filters.command("start") & filters.incoming)
         async def start_handler(c, m): await m.reply("✅ **Anime Bot Pro** is active.\nUsage: `/grab <url> [selection]`")
 
-        @self.app.on_message(filters.regex(r"^/all_(.*)"))
+        @self.app.on_message(filters.regex(r"^/all_([^@\s]+)"))
         async def stop_all_handler(c, m):
             if not self._is_auth(m): return
             group_id = m.matches[0].group(1)
+            logger.info(f"[*] Received Stop All: {group_id} (Full: {m.text})")
+            
             if group_id in Utils.ACTIVE_TASKS:
                 group = Utils.ACTIVE_TASKS[group_id]
                 group["cancelled"] = True
+                logger.info(f"[!] Group {group_id} marked as cancelled. Killing {len(group.get('tasks', []))} tasks.")
                 for tid in group.get("tasks", []):
                     if tid in Utils.ACTIVE_TASKS:
                         task = Utils.ACTIVE_TASKS[tid]
                         task["cancelled"] = True
                         if task.get("proc"):
-                            try: task["proc"].terminate()
-                            except: pass
+                            try:
+                                task["proc"].terminate()
+                                logger.info(f"[!] terminated process for task {tid}")
+                            except Exception as e:
+                                logger.error(f"Error terminating {tid}: {e}")
                 await m.reply(f"🛑 **Group Cancelled**: `{group_id}`")
             else:
+                logger.warning(f"[-] Invalid Stop All ID: {group_id}. Active: {list(Utils.ACTIVE_TASKS.keys())}")
                 await m.reply("❌ Invalid or expired Group ID.")
 
-        @self.app.on_message(filters.regex(r"^/c_(.*)"))
+        @self.app.on_message(filters.regex(r"^/c_([^@\s]+)"))
         async def cancel_task_handler(c, m):
             if not self._is_auth(m): return
             task_id = m.matches[0].group(1)
+            logger.info(f"[*] Received Cancel Task: {task_id} (Full: {m.text})")
+
             if task_id in Utils.ACTIVE_TASKS:
                 task = Utils.ACTIVE_TASKS[task_id]
                 task["cancelled"] = True
                 if task.get("proc"):
-                    try: task["proc"].terminate()
-                    except: pass
+                    try:
+                        task["proc"].terminate()
+                        logger.info(f"[!] terminated process for task {task_id}")
+                    except Exception as e:
+                        logger.error(f"Error terminating {task_id}: {e}")
                 await m.reply(f"🚫 **Task Cancelled**: `{task_id}`")
             else:
+                logger.warning(f"[-] Invalid Cancel ID: {task_id}. Active: {list(Utils.ACTIVE_TASKS.keys())}")
                 await m.reply("❌ Invalid or expired Task ID.")
 
         @self.app.on_message(filters.regex(r"^(?i)[/!]?(grab|fuck)\b") & filters.incoming)
@@ -856,6 +869,7 @@ class AnimeBot:
             status = await m.reply("🔍 **Analyzing...**")
             group_id = uuid.uuid4().hex[:8]
             Utils.ACTIVE_TASKS[group_id] = {"tasks": [], "cancelled": False, "msg": status}
+            logger.info(f"[+] Registered Group ID: {group_id}")
             try:
                 site = "rareanimes" if ("rareanimes.app" in url or "codedew.com" in url) else "hindianimezone" if ("hindianimezone.com" in url) else None
                 if site:
@@ -972,6 +986,7 @@ class AnimeBot:
                     task_id = f"{uuid.uuid4().hex[:5]}_{i+1}_{label.split()[0].lower()}"
                     Utils.ACTIVE_TASKS[task_id] = {"group": group_id, "proc": None, "cancelled": False}
                     if group_id: Utils.ACTIVE_TASKS[group_id]["tasks"].append(task_id)
+                    logger.info(f"[+] Registered Task ID: {task_id} for Group: {group_id}")
 
                     logger.info(f"[*] Processing Quality: {label} for Ep {i+1} (ID: {task_id})")
                     await Utils.safe_edit(ep_status, f"⏬ **Downloading {label} (Ep {i+1})...**")
