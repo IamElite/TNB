@@ -1102,10 +1102,10 @@ class AnimeBot:
                 return True
             
             logger.warning(f"[!] aria2c failed (Code {proc.returncode}). Trying stable curl_cffi fallback...")
-            return await self._download_requests(url, path, status, headers, cookies)
+            return await self._download_requests(url, path, status, headers, cookies, task_id)
         except Exception as e:
             logger.error(f"[!] aria2c start failed: {e}. Trying fallback...")
-            return await self._download_requests(url, path, status, headers, cookies)
+            return await self._download_requests(url, path, status, headers, cookies, task_id)
 
     async def _upload_progress(self, current, total, title, status, start, filename, task_id="0000"):
         if self.ACTIVE_TASKS.get(task_id, {}).get('stop'):
@@ -1120,7 +1120,7 @@ class AnimeBot:
             await Utils.safe_edit(status, msg)
             self._last_up = time.time()
 
-    async def _download_requests(self, url, path, status, headers, cookies):
+    async def _download_requests(self, url, path, status, headers, cookies, task_id="0000"):
         try:
             logger.info(f"[*] Starting chunked curl_cffi download: {url[:60]}...")
             # Using curl_cffi for browser-grade impersonation in fallback
