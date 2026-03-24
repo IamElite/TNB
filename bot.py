@@ -554,6 +554,7 @@ class RareAnimes:
 # --- UTILITIES ---
 class Utils:
     EDIT_STATES: Dict[int, Dict[str, Any]] = {}
+    ACTIVE_TASKS: Dict[str, Any] = {} # {id: {"group": gid, "proc": p, "cancelled": bool}}
     _NET_IO = None
     _NET_TIME = None
 
@@ -619,7 +620,7 @@ class Utils:
         return Utils.time_formatter(remaining * 1000)
 
     @staticmethod
-    def format_progress(filename, status_icon, status_text, p, speed, curr_size, tot_size, start_time, task_id="0000"):
+    def format_progress(filename, status_icon, status_text, p, speed, curr_size, tot_size, task_id=None, group_id=None):
         cpu, ram_str, net_mbps, disk_str = Utils.get_system_stats()
         eta = Utils.get_eta(curr_size, tot_size, speed)
         bar = Utils.progress_bar(p, l=10)
@@ -629,19 +630,24 @@ class Utils:
         sz_curr = Utils.human_bytes(curr_size)
         sz_tot = Utils.human_bytes(tot_size) if tot_size else "???"
         
-        # Box drawing UI - Premium Template
+        # Box drawing UI
         res = f"🚀 `{filename}`\n\n"
         res += f"┌ Status  : {status_icon} **{status_text}** {status_icon}\n"
         res += f"├ {bar} **{p:.1f}%**\n"
-        res += f"├ ⚡ Speed   : `{spd_str}`\n"
-        res += f"├ 📦 Size    : `{sz_curr} / {sz_tot}`\n"
-        res += f"├ ⏱ ETA     : `{eta}`\n"
-        res += f"└ /c_{task_id}\n"
-        res += f"» Stop All : /all_{task_id}\n\n"
+        res += f"├ ⚡ **Speed**   : `{spd_str}`\n"
+        res += f"├ 📦 **Size**    : `{sz_curr} / {sz_tot}`\n"
+        res += f"├ ⏱ **ETA**     : `{eta}`\n"
         
-        res += f"🖥 CPU: `{cpu}%` | 🌐 Net: `{net_mbps:.1f} Mbps`"
-        res += f"\n💾 RAM: `{ram_str}`"
-        res += f"\n🆓 Free: `{disk_str.split(' / ')[0]} / {disk_str.split(' / ')[1]}`"
+        if task_id:
+            res += f"└ /c_{task_id}\n"
+            if group_id:
+                res += f"» Stop All : /all_{group_id}\n\n"
+        else:
+            res += "└\n\n"
+
+        res += f"🖥 **CPU**: `{cpu}%` | 🌐 **Net**: `{net_mbps:.1f} Mbps`"
+        res += f"\n💾 **RAM**: `{ram_str}`"
+        res += f"\n🆓 **Free**: `{disk_str}`"
         
         return res
 
@@ -772,8 +778,6 @@ class Utils:
 
 # --- CORE ENGINE ---
 class AnimeBot:
-    ACTIVE_TASKS: Dict[str, Dict[str, Any]] = {}
-
     def __init__(self):
         self.app = Client(
             "anime_bot",
@@ -791,6 +795,38 @@ class AnimeBot:
     def _setup_handlers(self):
         @self.app.on_message(filters.command("start") & filters.incoming)
         async def start_handler(c, m): await m.reply("✅ **Anime Bot Pro** is active.\nUsage: `/grab <url> [selection]`")
+
+        @self.app.on_message(filters.regex(r"^/all_(.*)"))
+        async def stop_all_handler(c, m):
+            if not self._is_auth(m): return
+            group_id = m.matches[0].group(1)
+            if group_id in Utils.ACTIVE_TASKS:
+                group = Utils.ACTIVE_TASKS[group_id]
+                group["cancelled"] = True
+                for tid in group.get("tasks", []):
+                    if tid in Utils.ACTIVE_TASKS:
+                        task = Utils.ACTIVE_TASKS[tid]
+                        task["cancelled"] = True
+                        if task.get("proc"):
+                            try: task["proc"].terminate()
+                            except: pass
+                await m.reply(f"🛑 **Group Cancelled**: `{group_id}`")
+            else:
+                await m.reply("❌ Invalid or expired Group ID.")
+
+        @self.app.on_message(filters.regex(r"^/c_(.*)"))
+        async def cancel_task_handler(c, m):
+            if not self._is_auth(m): return
+            task_id = m.matches[0].group(1)
+            if task_id in Utils.ACTIVE_TASKS:
+                task = Utils.ACTIVE_TASKS[task_id]
+                task["cancelled"] = True
+                if task.get("proc"):
+                    try: task["proc"].terminate()
+                    except: pass
+                await m.reply(f"🚫 **Task Cancelled**: `{task_id}`")
+            else:
+                await m.reply("❌ Invalid or expired Task ID.")
 
         @self.app.on_message(filters.regex(r"^(?i)[/!]?(grab|fuck)\b") & filters.incoming)
         async def get_handler(c, m):
@@ -818,10 +854,12 @@ class AnimeBot:
                     if len(args) > 1: quality = args[1]
 
             status = await m.reply("🔍 **Analyzing...**")
+            group_id = uuid.uuid4().hex[:8]
+            Utils.ACTIVE_TASKS[group_id] = {"tasks": [], "cancelled": False, "msg": status}
             try:
                 site = "rareanimes" if ("rareanimes.app" in url or "codedew.com" in url) else "hindianimezone" if ("hindianimezone.com" in url) else None
                 if site:
-                    await self._handle_anime_site(m, url, selection, status, site, quality)
+                    await self._handle_anime_site(m, url, selection, status, site, quality, group_id)
                 else:
                     await status.edit("❌ Unsupported site.")
             except Exception as e:
@@ -843,23 +881,7 @@ class AnimeBot:
             elif a.isdigit(): nums.add(int(a))
         return sorted(list(nums)) if nums else None
 
-    @Client.on_message(filters.regex(r"^/c_(?P<tid>\w+)(?P<bot>@\w+)?"))
-    async def _cancel_task(self, client, message):
-        tid = message.matches[0].group("tid")
-        if tid in self.ACTIVE_TASKS:
-            self.ACTIVE_TASKS[tid]['stop'] = True
-            await message.reply(f"🛑 **Task** `{tid}` **cancellation requested.**")
-        else:
-            await message.reply(f"❌ **Task** `{tid}` **not found.**")
-
-    @Client.on_message(filters.regex(r"^/all_(?P<tid>\w+)(?P<bot>@\w+)?"))
-    async def _cancel_all_tasks(self, client, message):
-        # Cancel current TID and all other global tasks
-        for tid in list(self.ACTIVE_TASKS.keys()):
-            self.ACTIVE_TASKS[tid]['stop'] = True
-        await message.reply("🛑 **All active tasks have been cancelled.**")
-
-    async def _handle_anime_site(self, m, url, selection, status, site, pref_quality=None):
+    async def _handle_anime_site(self, m, url, selection, status, site, pref_quality=None, group_id=None):
         if site == "rareanimes":
             ep_start = min(selection) if selection else None
             ep_end = max(selection) if selection else None
@@ -883,28 +905,20 @@ class AnimeBot:
 
         if not episodes:
             return await Utils.safe_edit(status, "❌ No episodes to process.", force=True)
-        
-        task_id = uuid.uuid4().hex[:6].upper()
-        self.ACTIVE_TASKS[task_id] = {'stop': False, 'msg': m, 'pids': []}
-        
-        q_msg = f" (Quality: {pref_quality})" if pref_quality else ""
-        await Utils.safe_edit(status, f"✅ Found {len(episodes)} episodes{q_msg}. Task ID: `{task_id}`", force=True)
-        
-        try:
-            await self._process_episodes(m, episodes, bypasser, series_info, pref_quality, task_id)
-        finally:
-            if task_id in self.ACTIVE_TASKS:
-                del self.ACTIVE_TASKS[task_id]
-        
-        await status.delete()
 
-    async def _process_episodes(self, m, episodes, bypasser, series_info, pref_quality=None, task_id="0000"):
+        q_msg = f" (Quality: {pref_quality})" if pref_quality else ""
+        await Utils.safe_edit(status, f"✅ Found {len(episodes)} episodes{q_msg}. Ultra-High Speed active...", force=True)
+        await self._process_episodes(m, episodes, bypasser, series_info, pref_quality, group_id)
+        await status.delete()
+        if group_id in Utils.ACTIVE_TASKS:
+            Utils.ACTIVE_TASKS.pop(group_id, None)
+
+    async def _process_episodes(self, m, episodes, bypasser, series_info, pref_quality=None, group_id=None):
         # JIT Resolution: Only overlaps 'link resolution' in background. 
         # Download and Upload stay sequential to protect storage and network speed.
         next_res_task = None
         
         async def safe_resolve(ep):
-            if self.ACTIVE_TASKS.get(task_id, {}).get('stop'): return None
             try:
                 if hasattr(bypasser, 'resolve_episode'):
                     if isinstance(bypasser, HindiAnimeZone):
@@ -921,21 +935,21 @@ class AnimeBot:
         next_res_task = asyncio.create_task(safe_resolve(episodes[0]))
 
         for i in range(len(episodes)):
-            if self.ACTIVE_TASKS.get(task_id, {}).get('stop'):
-                logger.info(f"[*] Task {task_id} stopped.")
-                break
-                
-            # 1. Wait for current resolution
-            ep = await next_res_task
-            if not ep: break
+            if next_res_task:
+                ep = await next_res_task
             
+            # Check for group cancel
+            if group_id and Utils.ACTIVE_TASKS.get(group_id, {}).get("cancelled"):
+                logger.info(f"[*] Group {group_id} cancelled. Stopping...")
+                break
+
             # 2. Start NEXT resolution in background
             next_res_task = None
             if i + 1 < len(episodes):
                 next_res_task = asyncio.create_task(safe_resolve(episodes[i+1]))
 
-            # 3. Process current episode (Sequential DL -> UL)
-            ep_status = await m.reply(f"⏳ **Processing Episode {i+1}/{len(episodes)} (Task: {task_id})...**")
+            # 3. Process current episode
+            ep_status = await m.reply(f"⏳ **Processing Episode {i+1}/{len(episodes)}...**")
             try:
                 downloads = ep.get('downloads', [])
                 if pref_quality:
@@ -952,17 +966,25 @@ class AnimeBot:
                     continue
 
                 for label, dl in unique_dl.items():
-                    if self.ACTIVE_TASKS.get(task_id, {}).get('stop'): break
-                    
-                    logger.info(f"[*] Processing Quality: {label} for Ep {i+1}")
+                    if group_id and Utils.ACTIVE_TASKS.get(group_id, {}).get("cancelled"): break
+
+                    # Generate Unique Task ID for /c_
+                    task_id = f"{uuid.uuid4().hex[:5]}_{i+1}_{label.split()[0].lower()}"
+                    Utils.ACTIVE_TASKS[task_id] = {"group": group_id, "proc": None, "cancelled": False}
+                    if group_id: Utils.ACTIVE_TASKS[group_id]["tasks"].append(task_id)
+
+                    logger.info(f"[*] Processing Quality: {label} for Ep {i+1} (ID: {task_id})")
                     await Utils.safe_edit(ep_status, f"⏬ **Downloading {label} (Ep {i+1})...**")
                     
                     # 4. Sequential DL -> Split -> UL for THIS quality
-                    paths, ep_series_info = await self._prepare_quality(m, ep, dl, bypasser, ep_status, len(episodes), i+1, series_info, task_id)
+                    paths, ep_series_info = await self._prepare_quality(m, ep, dl, bypasser, ep_status, len(episodes), i+1, series_info, task_id, group_id)
                     
                     if paths:
                         await Utils.safe_edit(ep_status, f"📤 **Uploading {label} (Ep {i+1})...**")
-                        await self._upload_episode(m, paths, ep_status, len(episodes), i+1, ep_series_info, task_id)
+                        await self._upload_episode(m, paths, ep_status, len(episodes), i+1, ep_series_info, task_id, group_id)
+                    
+                    # Cleanup task after completion
+                    Utils.ACTIVE_TASKS.pop(task_id, None)
                     
             except Exception as e:
                 logger.error(f"Failed processing Ep {i+1}: {e}")
@@ -979,10 +1001,13 @@ class AnimeBot:
             return usage.free > (1.5 * 1024 * 1024 * 1024) # 1.5GB safety margin
         except: return True
 
-    async def _prepare_quality(self, m, ep, dl, bypasser, status, total, current, series_info, task_id="0000"):
+    async def _prepare_quality(self, m, ep, dl, bypasser, status, total, current, series_info, task_id=None, group_id=None):
         """Resolves, downloads, filters, and splits a SINGLE quality. Returns (list_of_paths, series_info)."""
         try:
-            if self.ACTIVE_TASKS.get(task_id, {}).get('stop'): return None, None
+            # Check for cancel
+            if task_id and Utils.ACTIVE_TASKS.get(task_id, {}).get("cancelled"): return None, None
+            if group_id and Utils.ACTIVE_TASKS.get(group_id, {}).get("cancelled"): return None, None
+
             req_dir = os.path.join(Config.DOWNLOAD_DIR, str(m.id))
             if not os.path.exists(req_dir): os.makedirs(req_dir)
 
@@ -1004,7 +1029,11 @@ class AnimeBot:
                 fname = f"{self._clean_noise(base_name)} {se_str} {ep_str} [{label.upper()}].mp4"
             
             fpath = os.path.join(req_dir, re.sub(r'[\\/*?:"<>|]', "", fname).strip())
-            if await self._download_manager(url, fpath, status, meta, task_id):
+            if await self._download_manager(url, fpath, status, meta, task_id, group_id):
+                # Another cancel check before processing
+                if task_id and Utils.ACTIVE_TASKS.get(task_id, {}).get("cancelled"): return None, None
+                if group_id and Utils.ACTIVE_TASKS.get(group_id, {}).get("cancelled"): return None, None
+
                 await self._filter_hindi_audio(fpath, status)
                 paths = await self._split_video(fpath, status)
                 # Cleanup original file if it was split or faststarted
@@ -1017,14 +1046,15 @@ class AnimeBot:
             logger.error(f"Prepare Quality Error: {e}")
             return None, None
 
-    async def _upload_episode(self, m, paths, status, total, current, series_info, task_id="0000"):
+    async def _upload_episode(self, m, paths, status, total, current, series_info, task_id=None, group_id=None):
         """Uploads paths and schedules deletion."""
         for p in paths:
-            if self.ACTIVE_TASKS.get(task_id, {}).get('stop'): break
-            await self._upload_file(m, p, status, current, total, os.path.basename(p), series_info, task_id)
+            if task_id and Utils.ACTIVE_TASKS.get(task_id, {}).get("cancelled"): break
+            if group_id and Utils.ACTIVE_TASKS.get(group_id, {}).get("cancelled"): break
+            await self._upload_file(m, p, status, current, total, os.path.basename(p), series_info, task_id, group_id)
             asyncio.create_task(self._delayed_delete(p))
 
-    async def _download_manager(self, url, path, status, meta, task_id="0000"):
+    async def _download_manager(self, url, path, status, meta, task_id=None, group_id=None):
         ua, cookies = meta.get('user_agent', Config.DEFAULT_UA), meta.get('cookies', {})
         referer = meta.get('referer', "https://swift.multiquality.click/")
         is_sensitive = any(x in url.lower() for x in ["monster", "swift", "multiquality", "downlead"])
@@ -1057,16 +1087,24 @@ class AnimeBot:
         logger.info(f"[*] Starting aria2c: {' '.join(cmd[:10])}...")
         try:
             proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-            if task_id in self.ACTIVE_TASKS:
-                self.ACTIVE_TASKS[task_id]['pids'].append(proc.pid)
             
+            # Register process for cancellation
+            if task_id and task_id in Utils.ACTIVE_TASKS:
+                Utils.ACTIVE_TASKS[task_id]["proc"] = proc
+
             while True:
-                if self.ACTIVE_TASKS.get(task_id, {}).get('stop'):
+                # Check for cancellation
+                if task_id and Utils.ACTIVE_TASKS.get(task_id, {}).get("cancelled"):
                     try: proc.terminate()
                     except: pass
-                    logger.warning(f"[*] Task {task_id} stopped during download.")
+                    logger.warning(f"[!] Download task {task_id} cancelled.")
                     return False
-                
+                if group_id and Utils.ACTIVE_TASKS.get(group_id, {}).get("cancelled"):
+                    try: proc.terminate()
+                    except: pass
+                    logger.warning(f"[!] Group {group_id} cancelled during download.")
+                    return False
+
                 line = await proc.stdout.readline()
                 if not line: break
                 line_str = line.decode('utf-8', 'ignore')
@@ -1082,11 +1120,20 @@ class AnimeBot:
                     bar = Utils.progress_bar(p, l=10)
                     
                     msg = f"🚀 `{fname}`\n\n"
+                    msg = Utils.format_progress(fname, "⏬", "Downloading", p, 0, 0, 0, task_id, group_id) # speed/size will be parsed below if needed, but Utils.format_progress handles it
+                    
+                    # Manual format for better control with aria2c strings
+                    msg = f"🚀 `{fname}`\n\n"
                     msg += f"┌ Status  : ⏬ **Downloading** ⏬\n"
                     msg += f"├ {bar} **{p}%**\n"
-                    msg += f"├ ⚡ **Speed**   : `{spd_str}/s`\n"
+                    msg += f"├ ⚡ **Speed**   : `{spd_str}`\n"
                     msg += f"├ 📦 **Size**    : `{curr_sz_str} / {tot_sz_str}`\n"
-                    msg += f"└ ⏱ **ETA**     : `{eta_str}`\n\n"
+                    msg += f"├ ⏱ **ETA**     : `{eta_str}`\n"
+                    if task_id:
+                        msg += f"└ /c_{task_id}\n"
+                        if group_id: msg += f"» Stop All : /all_{group_id}\n\n"
+                    else: msg += "└\n\n"
+
                     msg += f"🖥 **CPU**: `{cpu}%` | 💾 **RAM**: `{int(ram)}MB`"
                     msg += f"\n🌐 **Net**: `{net_mbps:.1f} Mbps` | ⬇ `{net_mib:.1f} MiB/s`"
                     
@@ -1100,33 +1147,12 @@ class AnimeBot:
                 return True
             
             logger.warning(f"[!] aria2c failed (Code {proc.returncode}). Trying stable curl_cffi fallback...")
-            return await self._download_requests(url, path, status, headers, cookies, task_id)
+            return await self._download_requests(url, path, status, headers, cookies, task_id, group_id)
         except Exception as e:
             logger.error(f"[!] aria2c start failed: {e}. Trying fallback...")
-            return await self._download_requests(url, path, status, headers, cookies, task_id)
+            return await self._download_requests(url, path, status, headers, cookies, task_id, group_id)
 
-    async def _upload_progress(self, *args):
-        # Pyrogram can pass (current, total, *progress_args) OR (client, current, total, *progress_args)
-        if len(args) == 7:
-            current, total, title, status, start, filename, task_id = args
-        elif len(args) == 8:
-            _, current, total, title, status, start, filename, task_id = args
-        else:
-            return
-
-        if self.ACTIVE_TASKS.get(task_id, {}).get('stop'):
-            # Stop the task by exiting early (will fail eventually or we skip)
-            # To actually stop send_video, one might raise an exception, but returning is safer.
-            return
-        
-        if time.time() - self._last_up > Config.PROGRESS_UPDATE_INTERVAL:
-            p = current * 100 / total if total else 0
-            speed = current / (time.time() - start) if (time.time() - start) > 0 else 0
-            msg = Utils.format_progress(filename, "📤", "Uploading", p, speed, current, total, start, task_id)
-            await Utils.safe_edit(status, msg)
-            self._last_up = time.time()
-
-    async def _download_requests(self, url, path, status, headers, cookies, task_id="0000"):
+    async def _download_requests(self, url, path, status, headers, cookies, task_id=None, group_id=None):
         try:
             logger.info(f"[*] Starting chunked curl_cffi download: {url[:60]}...")
             # Using curl_cffi for browser-grade impersonation in fallback
@@ -1143,6 +1169,9 @@ class AnimeBot:
                 start_t = time.time()
                 with open(path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=1 * 1024 * 1024):
+                        if task_id and Utils.ACTIVE_TASKS.get(task_id, {}).get("cancelled"): return False
+                        if group_id and Utils.ACTIVE_TASKS.get(group_id, {}).get("cancelled"): return False
+
                         if chunk:
                             f.write(chunk)
                             curr += len(chunk)
@@ -1151,7 +1180,7 @@ class AnimeBot:
                                 fname = os.path.basename(path)
                                 speed = curr / (time.time() - start_t) if (time.time() - start_t) > 0 else 0
                                 
-                                msg = Utils.format_progress(fname, "⏬", "Downloading (Fallback)", p, speed, curr, total, start_t, task_id)
+                                msg = Utils.format_progress(fname, "⏬", "Downloading (Fallback)", p, speed, curr, total, task_id, group_id)
                                 await Utils.safe_edit(status, msg)
                                 last_up = time.time()
             return os.path.exists(path) and os.path.getsize(path) > 1000
@@ -1159,7 +1188,7 @@ class AnimeBot:
             logger.error(f"[!] curl_cffi fallback failed: {e}")
             return False
 
-    async def _upload_file(self, m, fpath, status, current, total, label, series_info, task_id="0000"):
+    async def _upload_file(self, m, fpath, status, current, total, label, series_info, task_id=None, group_id=None):
         w, h, dur = await self._get_video_meta(fpath)
         cap = self._make_caption(fpath, os.path.getsize(fpath), dur, series_info)
         start = time.time()
@@ -1169,7 +1198,7 @@ class AnimeBot:
             fname = os.path.basename(fpath)
             await self.app.send_video(m.chat.id, fpath, caption=cap, duration=dur, width=w, height=h, thumb=thumb,
                                     supports_streaming=True,
-                                    progress=self._upload_progress, progress_args=(f"**Uploading {current}/{total}**", status, start, fname, task_id))
+                                    progress=self._upload_progress, progress_args=(f"**Uploading {current}/{total}**", status, start, fname, task_id, group_id))
         except Exception as e: logger.error(f"Upload fail: {e}")
         finally:
             if thumb and os.path.exists(thumb):
@@ -1377,12 +1406,17 @@ class AnimeBot:
             logger.error(f"Thumbnail error: {e}")
             return None
 
-    async def _upload_progress(self, cur, tot, ud, msg, start, fname):
+    async def _upload_progress(self, cur, tot, ud, msg, start, fname, task_id=None, group_id=None):
+        if task_id and Utils.ACTIVE_TASKS.get(task_id, {}).get("cancelled"):
+            raise Exception("Upload Cancelled")
+        if group_id and Utils.ACTIVE_TASKS.get(group_id, {}).get("cancelled"):
+            raise Exception("Group Cancelled")
+
         p = cur*100/tot if tot else 0
         if time.time() - getattr(self, '_last_up', 0) > Config.PROGRESS_UPDATE_INTERVAL:
             speed = cur / (time.time() - start) if (time.time() - start) > 0 else 0
             # Advanced Box UI
-            msg_text = Utils.format_progress(fname, "⏫", ud, p, speed, cur, tot, start)
+            msg_text = Utils.format_progress(fname, "⏫", ud, p, speed, cur, tot, task_id, group_id)
             await Utils.safe_edit(msg, msg_text)
             self._last_up = time.time()
 
