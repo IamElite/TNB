@@ -23,7 +23,7 @@ from flask import Flask
 from curl_cffi import requests as currequests
 from bs4 import BeautifulSoup
 
-from test.z_oldHAZ import HindiAnimeZone
+from HindiAnimeZone import HindiAnimeZone
 
 # --- CONFIGURATION ---
 class Config:
