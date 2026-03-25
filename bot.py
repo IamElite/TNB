@@ -347,28 +347,44 @@ class RareAnimes:
         try:
             curr_url, curr_ref = url, referer
             logger.info(f"[*] Bypassing zipper gate for: {url}")
+            # Cache of seen tokens to avoid redundant MQ hits
+            seen_tokens = set()
+
             for step in range(1, 15):
                 resp = self.session.get(curr_url, headers={"Referer": curr_ref}, timeout=15)
                 if resp.status_code != 200: return None
                 
-                main_zone = BeautifulSoup(resp.text, "html.parser").select_one(".entry-content, article, #main, .download-links, .download-box") or BeautifulSoup(resp.text, "html.parser")
+                soup = BeautifulSoup(resp.text, "html.parser")
+                main_zone = soup.select_one(".entry-content, article, #main, .download-links, .download-box") or soup
                 main_html = str(main_zone)
                 
-                # Plan A: Prioritize multiquality links (Fastest)
-                mq_link = re.search(r'/(?:multiquality|ziptron\.php|liptron\.php)/\?(?:url|id)=([a-zA-Z0-9]{13,50})', main_html)
-                if mq_link:
-                    token = mq_link.group(1)
-                    logger.info(f"[+] Found Redirect Token: {token}")
+                # Plan A: Priority Tokens from actual links
+                # Look for multiquality.click/downlead/TOKEN or common zipper redirects
+                found_links = []
+                for a in soup.find_all("a", href=True):
+                    href = a["href"]
+                    # Pattern 1: Direct MQ link
+                    mq_match = re.search(r'downlead/([a-zA-Z0-9]{8,64})/?', href)
+                    if mq_match: found_links.append(mq_match.group(1))
+                    
+                    # Pattern 2: Codedew redirector
+                    pipe_match = re.search(r'/(?:multiquality|ziptron\.php|liptron\.php)/\?(?:url|id)=([a-zA-Z0-9]{8,64})', href)
+                    if pipe_match: found_links.append(pipe_match.group(1))
+
+                # Plan B: Hidden tokens in the page (rtiwatch, etc.)
+                token_match = re.search(r'name=["\']rtiwatch["\']\s+value=["\']([^"\']+)["\']', main_html)
+                if token_match and token_match.group(1) not in ["notranslate", ""]:
+                    found_links.append(token_match.group(1))
+
+                # Try all found tokens
+                for token in found_links:
+                    if token in seen_tokens: continue
+                    seen_tokens.add(token)
+                    logger.info(f"[+] Found Priority Token: {token}")
                     links = self.process_multiquality(f"{self.MQ_BASE_URL}downlead/{token}/")
                     if links: return links
-                
-                # Look for rtiwatch
-                token_match = re.search(r'name="rtiwatch"\s+value="([^"]+)"', main_html)
-                if token_match and token_match.group(1) not in ["notranslate", ""]:
-                    links = self.process_multiquality(f"{self.MQ_BASE_URL}downlead/{token_match.group(1)}/")
-                    if links: return links
-                
-                # Plan B: Token Hunter (Fallback)
+
+                # Plan C: Token Hunter fallback
                 scripts = re.findall(r'<script.*?>\s*(.*?)\s*</script>', resp.text, re.DOTALL | re.I)
                 potential_tokens = []
                 for script in scripts:
@@ -376,23 +392,18 @@ class RareAnimes:
                     potential_tokens.extend(found)
 
                 for token in potential_tokens:
+                    if token in seen_tokens: continue
+                    # Basic noise filter for ad tokens
                     if any(x in token.lower() for x in ["wrapper", "container", "loader", "progress", "button", "player", "header", "footer"]): continue
+                    seen_tokens.add(token)
                     logger.info(f"[+] Token Hunter testing: {token}")
                     links = self.process_multiquality(f"{self.MQ_BASE_URL}downlead/{token}/")
                     if links: return links
 
-                # Plan C: Follow the "Next" link chain
-                soup = BeautifulSoup(resp.text, "html.parser")
+                # Plan D: Follow the "Next" link chain
                 next_url = self._find_next_button(soup, curr_url)
-                if not next_url:
-                    # Look for episode-like buttons or ad steps
-                    for a in soup.find_all("a", href=True):
-                        text = a.get_text(strip=True)
-                        if re.search(r'(S\d+|Episode|Ep)\s*\d+', text, re.I) or "ad_step=" in a["href"]:
-                            next_url = urljoin(curr_url, a["href"])
-                            if next_url != curr_url: break
-                
                 if not next_url: return None
+                
                 logger.info(f"[*] Step {step}: Jumping to {next_url[:60]}...")
                 curr_ref, curr_url = curr_url, next_url
                 time.sleep(1.0)
@@ -401,13 +412,27 @@ class RareAnimes:
         return None
 
     def _find_next_button(self, soup: BeautifulSoup, current_url: str) -> Optional[str]:
-        # High-priority button selectors
+        # 1. High-priority ID-based buttons
         for selector in ["a#goBtn", "a#mainActionBtn", "a.btn-main", "a.btn-success", "a.btn-primary"]:
             btn = soup.select_one(selector)
             if btn and btn.get("href"):
                 url = urljoin(self.ROOT_URL, btn["href"])
                 if url != current_url and not url.startswith("javascript:"):
                     return url
+        
+        # 2. Episode-specific or "Gate" buttons (Often seen on new multi-hop redirects)
+        for a in soup.find_all("a", href=True):
+            text = a.get_text(strip=True)
+            # Match "S1 E4", "Episode 4", "Episode 04", etc.
+            if re.search(r'^(?:S\d+\s*)?E(?:pisode|p)?\s*\d+\s*$', text, re.I):
+                url = urljoin(self.ROOT_URL, a["href"])
+                if url != current_url: return url
+            
+            # Match ad-steps
+            if "ad_step=" in a["href"]:
+                url = urljoin(self.ROOT_URL, a["href"])
+                if url != current_url: return url
+                
         return None
 
     def process_multiquality(self, url: str) -> Optional[List[Dict[str, str]]]:
