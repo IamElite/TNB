@@ -23,7 +23,7 @@ from flask import Flask
 from curl_cffi import requests as currequests
 from bs4 import BeautifulSoup
 
-from HindiAnimeZone import HindiAnimeZone
+from test.z_oldHAZ import HindiAnimeZone
 
 # --- CONFIGURATION ---
 class Config:
@@ -347,86 +347,50 @@ class RareAnimes:
         try:
             curr_url, curr_ref = url, referer
             logger.info(f"[*] Bypassing zipper gate for: {url}")
-            for step in range(1, 12):
+            for step in range(1, 15):
                 resp = self.session.get(curr_url, headers={"Referer": curr_ref}, timeout=15)
                 if resp.status_code != 200: return None
                 
-                # Plan A: Search for direct tokens or MQ links in HTML
-                # Restricted search area to avoid sidebar/menu noise
-                soup = BeautifulSoup(resp.text, "html.parser")
-                main_zone = soup.select_one(".entry-content, article, #main, .download-links, .download-box") or soup
+                main_zone = BeautifulSoup(resp.text, "html.parser").select_one(".entry-content, article, #main, .download-links, .download-box") or BeautifulSoup(resp.text, "html.parser")
                 main_html = str(main_zone)
                 
-                # Look for rtiwatch (Old but still used sometimes)
+                # Plan A: Prioritize multiquality links (Fastest)
+                mq_link = re.search(r'/(?:multiquality|ziptron\.php|liptron\.php)/\?(?:url|id)=([a-zA-Z0-9]{13,50})', main_html)
+                if mq_link:
+                    token = mq_link.group(1)
+                    logger.info(f"[+] Found Redirect Token: {token}")
+                    links = self.process_multiquality(f"{self.MQ_BASE_URL}downlead/{token}/")
+                    if links: return links
+                
+                # Look for rtiwatch
                 token_match = re.search(r'name="rtiwatch"\s+value="([^"]+)"', main_html)
                 if token_match and token_match.group(1) not in ["notranslate", ""]:
-                    return self.process_multiquality(f"{self.MQ_BASE_URL}downlead/{token_match.group(1)}/")
+                    links = self.process_multiquality(f"{self.MQ_BASE_URL}downlead/{token_match.group(1)}/")
+                    if links: return links
                 
-                # Look for multiquality/downlead links
-                mq_link = re.search(r'https?://(?:swift\.)?multiquality\.click/downlead/([^/\"\'\s>]+)', main_html)
-                if mq_link:
-                    return self.process_multiquality(f"{self.MQ_BASE_URL}downlead/{mq_link.group(1)}/")
-                
-                # Look for ziptron, liptron or multiquality internal links
-                # Handle both ?url=TOKEN and ?TOKEN formats
-                token_link = re.search(r'/(?:ziptron\.php|liptron\.php|multiquality)/\?(?:(?:url|id)=)?([^/\"\'\s>&\#]+)', main_html)
-                if token_link:
-                    token = token_link.group(1)
-                    if 10 < len(token) < 50:
-                        logger.info(f"[+] Found Redirect Token: {token}")
-                        return self.process_multiquality(f"{self.MQ_BASE_URL}downlead/{token}/")
-                
-                # Look for tokens in JS variables (Token Hunter)
-                # We focus on script tags within or near the main content
+                # Plan B: Token Hunter (Fallback)
                 scripts = re.findall(r'<script.*?>\s*(.*?)\s*</script>', resp.text, re.DOTALL | re.I)
                 potential_tokens = []
-                
-                # Regex for variables: fid, fileId, video_id, token, id (if in script)
-                # Refined to avoid descriptive strings with multiple hyphens/underscores
                 for script in scripts:
                     found = re.findall(r'(?:fid|fileId|video_id|token|["\']id["\'])\s*[:=]\s*["\']([a-zA-Z0-9]{14,40})["\']', script, re.I)
                     potential_tokens.extend(found)
-                
-                # Also check for liptron/ziptron links anywhere in main content
-                url_tokens = re.findall(r'/(?:ziptron\.php|liptron\.php|multiquality)/\?(?:url|id)=([a-zA-Z0-9_\-]{13,40})', main_html)
-                potential_tokens.extend(url_tokens)
 
                 for token in potential_tokens:
-                    # Filter out common false positives
-                    # 1. Block known keywords
-                    if any(x in token.lower() for x in ["wrapper", "container", "loader", "progress", "button", "player", "header", "footer"]):
-                        continue
-                    # 2. Block all-lowercase tokens (likely CSS classes/IDs) if they are short or lack numbers
-                    if token.islower() and not any(c.isdigit() for c in token) and len(token) < 16:
-                        continue
-                    # 3. Block tokens with too many repeating generic patterns
-                    if "xxxx" in token or "aaaa" in token:
-                        continue
-                    
-                    logger.info(f"[+] Token Hunter found potential token: {token}")
+                    if any(x in token.lower() for x in ["wrapper", "container", "loader", "progress", "button", "player", "header", "footer"]): continue
+                    logger.info(f"[+] Token Hunter testing: {token}")
                     links = self.process_multiquality(f"{self.MQ_BASE_URL}downlead/{token}/")
                     if links: return links
 
-                # Plan B: Follow the "Next" link chain
+                # Plan C: Follow the "Next" link chain
                 soup = BeautifulSoup(resp.text, "html.parser")
                 next_url = self._find_next_button(soup, curr_url)
                 if not next_url:
-                    # Final attempt: just look for ANY gate-like link that isn't the current one (restricted to main zone)
-                    for a in main_zone.find_all("a", href=True):
-                        href = urljoin(curr_url, a["href"])
-                        # Basic URL validation
-                        if not href.startswith("http"): continue
-                        try:
-                            parsed = urlparse(href)
-                            if ":" in parsed.netloc: # Port check
-                                port_part = parsed.netloc.split(":")[-1]
-                                if port_part and not port_part.isdigit(): continue
-                        except: continue
-
-                        is_gate = any(x in href for x in ["/zipper/", "/watchbeta/", "/watch/", "/multiquality/"])
-                        if is_gate and href != curr_url and not href.startswith("javascript:"):
-                            next_url = href
-                            break
+                    # Look for episode-like buttons or ad steps
+                    for a in soup.find_all("a", href=True):
+                        text = a.get_text(strip=True)
+                        if re.search(r'(S\d+|Episode|Ep)\s*\d+', text, re.I) or "ad_step=" in a["href"]:
+                            next_url = urljoin(curr_url, a["href"])
+                            if next_url != curr_url: break
                 
                 if not next_url: return None
                 logger.info(f"[*] Step {step}: Jumping to {next_url[:60]}...")
@@ -453,6 +417,10 @@ class RareAnimes:
             resp = self.session.get(url, timeout=15)
             if resp.status_code != 200:
                 logger.error(f"[!] MQ Page Error: {resp.status_code} for {url}")
+                return None
+
+            if "Video not found" in resp.text:
+                logger.warning(f"[!] MQ Page: Video not found for {url}")
                 return None
 
             if "window.juicyData =" not in resp.text:
