@@ -1,5 +1,5 @@
-"""Desi49 Bot PRO v5.16 - Speed Harmonized
-✅ 10 Staggered Workers | ✅ Network Optimized | ✅ CPU Balanced | ✅ Python 3.14 Fix"""
+"""Desi49 Bot PRO v5.17 - Clean & Custom
+✅ Start Message Button | ✅ Branding Removed | ✅ Extreme Speed | ✅ Python 3.14 Fix"""
 import os, re, time, base64, asyncio, logging, psutil, uuid, struct, math, types, random
 from math import ceil
 from random import randint
@@ -18,7 +18,7 @@ except ImportError:
 from urllib.parse import unquote
 import aiohttp, aiofiles
 from pyrogram import Client, filters, enums, raw
-from pyrogram.types import Message
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.session import Session
 
 # --- LOGGING SETUP ---
@@ -48,6 +48,7 @@ API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 OWNER_ID = int(os.environ.get("OWNER_ID", 0))
 DUMP_CHANNEL = int(os.environ.get("DUMP_CHANNEL", 0))
+OWNER_PROFILE_ID = "8057695402"
 
 DOWNLOAD_DIR = "downloads"
 MAX_TG_SIZE = 2 * 1024 * 1024 * 1024
@@ -116,8 +117,8 @@ class TaskManager:
         return False
 
 class HyperTGUpload:
-    """Parallel session uploader - Harmonized v5.16"""
-    def __init__(self, client, workers=10): # Level 10
+    """Parallel session uploader - Clean v5.17"""
+    def __init__(self, client, workers=10):
         self.client = client
         self.workers = workers
         self._processed = 0
@@ -150,7 +151,7 @@ class HyperTGUpload:
             self._sessions.append(session)
             return session
         except Exception as e:
-            log.warning(f"HyperUL: Session startup failed: {e}")
+            log.warning(f"Startup failed: {e}")
             return None
 
     async def _worker(self, queue, file_path, file_id, is_big, total_parts, chunk_size):
@@ -176,7 +177,7 @@ class HyperTGUpload:
 
     async def save_file(self, path, progress=None, progress_args=()):
         size = os.path.getsize(path)
-        log.info(f"HyperUL: Starting upload for {os.path.basename(path)} ({format_size(size)})")
+        log.info(f"Starting upload for {os.path.basename(path)} ({format_size(size)})")
         
         chunk_size = 512 * 1024
         total_parts = ceil(size / chunk_size)
@@ -185,7 +186,6 @@ class HyperTGUpload:
         is_big = size > 10 * 1024 * 1024
         queue = asyncio.Queue(maxsize=self.workers * 2)
         
-        # Staggered Worker Startup (0.1s delay)
         tasks = []
         for i in range(self.workers):
             tasks.append(asyncio.create_task(self._worker(queue, path, file_id, is_big, total_parts, chunk_size)))
@@ -204,7 +204,7 @@ class HyperTGUpload:
 
         await asyncio.gather(*tasks)
         if self._processed < size:
-            raise Exception("HyperUL: Upload incomplete, processed bytes mismatch.")
+            raise Exception("Upload incomplete, processed bytes mismatch.")
 
         if is_big: return raw.types.InputFileBig(id=file_id, parts=total_parts, name=os.path.basename(path))
         return raw.types.InputFile(id=file_id, parts=total_parts, name=os.path.basename(path), md5_checksum="")
@@ -453,9 +453,9 @@ async def upload_progress(current, total, status_msg, title, start_t, task_id: s
     stats = get_system_stats(task_start=start_t)
 
     status_icon = "⚡" if is_hyper else "🔵"
-    status_text = "HyperUL Ultra-Fast" if is_hyper else "Uploading"
+    status_text = "Extreme Uploading" if is_hyper else "Uploading"
     bar = progress_bar(pct)
-    tg_status = "ON | HYPER-WZML" if HAS_TGCRYPTO else "OFF (Slow)"
+    tg_status = "STABLE" if HAS_TGCRYPTO else "LEGACY"
 
     res = f"🚀 `{title}`\n\n"
     res += f"┌ Status : {status_icon} **{status_text}** {status_icon}\n"
@@ -483,7 +483,14 @@ async def cancel_task_handler(client: Client, message: Message):
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(_, m: Message):
     log.info(f"👤 Start command from: {m.from_user.id}")
-    await m.reply_text("🎬 **Desi49 Bot PRO v5.16 (Speed Harmonized)**\n\n📥 URL bhejiye → 📤 Ultra-Fast Video mil jayega\n\n🔹 `/c_<task_id>` se task cancel karein\n🔹 `/queue` se queue dekhein\n🔹 ⚡ Parallel Sessions Upload Active")
+    btn = InlineKeyboardMarkup([[InlineKeyboardButton("👤 Owner", url=f"tg://user?id={OWNER_PROFILE_ID}")]])
+    await m.reply_text(
+        "🎬 **Welcome to Desi49 Bot PRO**\n\n"
+        "📥 Send any URL to download and upload with extreme speed!\n\n"
+        "🔹 `/queue` - Check current tasks\n"
+        "🔹 `/c_<id>` - Cancel your task",
+        reply_markup=btn
+    )
 
 @app.on_message(filters.command("queue") & filters.private)
 async def queue_status(_, m: Message):
@@ -534,9 +541,9 @@ async def process_request(client: Client, message: Message, url: str, status: Me
         log.info(f"📦 Task {task_id} metadata: Dur={vid_duration}, Dim={vid_width}x{vid_height}")
         caption = f"🎬 **{title}**\n📦 `{format_size(size)}`"
         
-        # HyperUL Logic
-        log.info(f"⚡ Task {task_id}: Starting HyperUL upload (10 staggered workers)...")
-        await status.edit_text(f"🎬 `{title}`\n\n⚡ **HyperUL Harmonized Upload Start**...")
+        # Hyper Engine (Uploader)
+        log.info(f"⚡ Task {task_id}: Starting Extreme Upload (10 staggered workers)...")
+        await status.edit_text(f"🎬 `{title}`\n\n⚡ **Optimized Upload Start**...")
         uploader = HyperTGUpload(client, workers=10)
         start_up = time.time()
         
@@ -544,7 +551,7 @@ async def process_request(client: Client, message: Message, url: str, status: Me
         try:
             input_file = await uploader.save_file(filepath, progress=upload_progress, progress_args=(status, title, start_up, task_id, True))
         except Exception as ue:
-            log.warning(f"⚠️ HyperUL Failed for {task_id}, fallback to standard: {ue}")
+            log.warning(f"⚠️ Upload fallback for {task_id}: {ue}")
             await status.edit_text(f"🎬 `{title}`\n\n🔄 Fallback upload start...")
 
         if TaskManager.is_cancelled(task_id): return
@@ -622,7 +629,7 @@ async def worker():
 
 async def main():
     await app.start()        
-    log.info("✅ Desi49 Bot PRO v5.16 Started!")
+    log.info("✅ Desi49 Bot PRO v5.17 Started!")
     asyncio.create_task(worker())
     from pyrogram import idle
     await idle()
