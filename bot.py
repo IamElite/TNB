@@ -1,5 +1,5 @@
-"""Desi49 Bot PRO v5.18 - Owner Button Fixed
-✅ Callback-based Owner Profile | ✅ Branding Removed | ✅ Extreme Speed | ✅ Python 3.14 Fix"""
+"""Desi49 Bot PRO v5.17 - Clean & Custom
+✅ Start Message Button | ✅ Branding Removed | ✅ Extreme Speed | ✅ Python 3.14 Fix"""
 import os, re, time, base64, asyncio, logging, psutil, uuid, struct, math, types, random
 from math import ceil
 from random import randint
@@ -18,7 +18,7 @@ except ImportError:
 from urllib.parse import unquote
 import aiohttp, aiofiles
 from pyrogram import Client, filters, enums, raw
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.session import Session
 
 # --- LOGGING SETUP ---
@@ -117,7 +117,7 @@ class TaskManager:
         return False
 
 class HyperTGUpload:
-    """Parallel session uploader - Clean v5.18"""
+    """Parallel session uploader - Clean v5.17"""
     def __init__(self, client, workers=10):
         self.client = client
         self.workers = workers
@@ -483,22 +483,13 @@ async def cancel_task_handler(client: Client, message: Message):
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(_, m: Message):
     log.info(f"👤 Start command from: {m.from_user.id}")
-    btn = InlineKeyboardMarkup([[InlineKeyboardButton("👤 Owner", callback_data="open_owner")]])
+    btn = InlineKeyboardMarkup([[InlineKeyboardButton("👤 Owner", url=f"https://t.me/user?id={OWNER_PROFILE_ID}")]])
     await m.reply_text(
         "🎬 **Welcome to Desi49 Bot PRO**\n\n"
         "📥 Send any URL to download and upload with extreme speed!\n\n"
         "🔹 `/queue` - Check current tasks\n"
         "🔹 `/c_<id>` - Cancel your task",
         reply_markup=btn
-    )
-
-@app.on_callback_query(filters.regex("open_owner"))
-async def owner_callback_handler(_, cb: CallbackQuery):
-    await cb.answer()
-    await cb.message.reply_text(
-        f"👤 **Owner Profile Link**\n\n"
-        f"👉 [Owner Details (Click to open)](tg://user?id={OWNER_PROFILE_ID})",
-        parse_mode=enums.ParseMode.MARKDOWN
     )
 
 @app.on_message(filters.command("queue") & filters.private)
@@ -638,7 +629,7 @@ async def worker():
 
 async def main():
     await app.start()        
-    log.info("✅ Desi49 Bot PRO v5.18 Started!")
+    log.info("✅ Desi49 Bot PRO v5.17 Started!")
     asyncio.create_task(worker())
     from pyrogram import idle
     await idle()
