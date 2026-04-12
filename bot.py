@@ -620,12 +620,7 @@ async def worker():
             await asyncio.sleep(2)
 
 async def main():
-    await app.start()
-    # Aggressively silence Pyrogram loggers after start
-    for logger_name in logging.root.manager.loggerDict:
-        if "pyrogram" in logger_name:
-            logging.getLogger(logger_name).setLevel(logging.WARNING)
-            
+    await app.start()        
     log.info("✅ Desi49 Bot PRO v5.13 Started!")
     asyncio.create_task(worker())
     from pyrogram import idle
