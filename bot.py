@@ -1,5 +1,5 @@
-"""Desi49 Bot PRO v5.10 - HyperUL Deadlock Fixed
-✅ Multi-Sessions | ✅ Deadlock Fix | ✅ Stability Fixed | ✅ Clean Logs"""
+"""Desi49 Bot PRO v5.11 - Kurigram Session Fix
+✅ Multi-Sessions | ✅ Deadlock Fixed | ✅ Kurigram Compatibility | ✅ Clean Logs"""
 import os, re, time, base64, asyncio, logging, psutil, uuid, struct, math, types, random
 from math import ceil
 from random import randint
@@ -29,7 +29,7 @@ logging.basicConfig(
     handlers=[
         RotatingFileHandler(
             LOG_FILE_NAME,
-            maxBytes=20000000, # 20MB
+            maxBytes=20000000,
             backupCount=5
         ),
         logging.StreamHandler()
@@ -115,7 +115,7 @@ class TaskManager:
         return False
 
 class HyperTGUpload:
-    """Parallel session uploader - Deadlock Fixed"""
+    """Parallel session uploader - Kurigram Compatible"""
     def __init__(self, client, workers=6):
         self.client = client
         self.workers = workers
@@ -128,12 +128,20 @@ class HyperTGUpload:
             dc_id = await self.client.storage.dc_id()
             auth_key = await self.client.storage.auth_key()
             test_mode = await self.client.storage.test_mode()
-            session = Session(self.client, dc_id, auth_key, test_mode, is_media=True)
+            
+            # Using Keyword Arguments for Kurigram compatibility
+            session = Session(
+                client=self.client,
+                dc_id=dc_id,
+                auth_key=auth_key,
+                test_mode=test_mode,
+                is_media=True
+            )
             await session.start()
             self._sessions.append(session)
             return session
         except Exception as e:
-            log.warning(f"HyperUL: Session init failed: {e}")
+            log.warning(f"HyperUL: Session startup failed: {e}")
             return None
 
     async def _worker(self, queue, file_path, file_id, is_big, total_parts, chunk_size):
@@ -171,7 +179,6 @@ class HyperTGUpload:
         is_big = size > 10 * 1024 * 1024
         queue = asyncio.Queue(maxsize=self.workers * 2)
         
-        # FIX: Start workers BEFORE putting items to avoid blocking the main task
         tasks = [asyncio.create_task(self._worker(queue, path, file_id, is_big, total_parts, chunk_size)) for i in range(self.workers)]
         
         if progress:
@@ -182,7 +189,6 @@ class HyperTGUpload:
                     await asyncio.sleep(2.5)
             asyncio.create_task(report())
 
-        # Now populate the queue - workers are already consuming
         for p in range(total_parts): await queue.put(p)
         for _ in range(self.workers): await queue.put(None)
 
@@ -467,7 +473,7 @@ async def cancel_task_handler(client: Client, message: Message):
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(_, m: Message):
     log.info(f"👤 Start command from: {m.from_user.id}")
-    await m.reply_text("🎬 **Desi49 Bot PRO v5.10 (Deadlock Fixed)**\n\n📥 URL bhejiye → 📤 Ultra-Fast Video mil jayega\n\n🔹 `/c_<task_id>` se task cancel karein\n🔹 `/queue` se queue dekhein\n🔹 ⚡ Parallel Sessions Upload Active")
+    await m.reply_text("🎬 **Desi49 Bot PRO v5.11 (Kurigram compatible)**\n\n📥 URL bhejiye → 📤 Ultra-Fast Video mil jayega\n\n🔹 `/c_<task_id>` se task cancel karein\n🔹 `/queue` se queue dekhein\n🔹 ⚡ Parallel Sessions Upload Active")
 
 @app.on_message(filters.command("queue") & filters.private)
 async def queue_status(_, m: Message):
@@ -608,7 +614,7 @@ async def main():
         if "pyrogram" in logger_name:
             logging.getLogger(logger_name).setLevel(logging.WARNING)
             
-    log.info("✅ Desi49 Bot PRO v5.10 Started!")
+    log.info("✅ Desi49 Bot PRO v5.11 Started!")
     asyncio.create_task(worker())
     from pyrogram import idle
     await idle()
