@@ -1,8 +1,9 @@
-"""Desi49 Bot PRO v5.8 - Multi-Session Ultra-Fast
-✅ Parallel Session Upload | ✅ Dimension Fix | ✅ Fully Silent Logs"""
+"""Desi49 Bot PRO v5.9 - Multi-Session Ultra-Fast
+✅ Parallel Session Upload | ✅ Dimension Fix | ✅ Refactored Rotating Logging"""
 import os, re, time, base64, asyncio, logging, psutil, uuid, struct, math, types, random
 from math import ceil
 from random import randint
+from logging.handlers import RotatingFileHandler
 try:
     import uvloop
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
@@ -20,12 +21,26 @@ from pyrogram.types import Message
 from pyrogram.session import Session
 
 # --- LOGGING SETUP ---
+LOG_FILE_NAME = "bot.log"
 logging.basicConfig(
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     level=logging.INFO,
-    handlers=[logging.StreamHandler(), logging.FileHandler("bot.log")]
+    format="[%(asctime)s - %(levelname)s] - %(name)s - %(message)s",
+    datefmt='%d-%b-%y %H:%M:%S',
+    handlers=[
+        RotatingFileHandler(
+            LOG_FILE_NAME,
+            maxBytes=50000000,
+            backupCount=10
+        ),
+        logging.StreamHandler()
+    ]
 )
-log = logging.getLogger("desi49bot")
+logging.getLogger("pyrogram").setLevel(logging.WARNING)
+
+def logs(name: str) -> logging.Logger:
+    return logging.getLogger(name)
+
+log = logs("desi49bot")
 
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
@@ -450,7 +465,7 @@ async def cancel_task_handler(client: Client, message: Message):
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(_, m: Message):
     log.info(f"👤 Start command from: {m.from_user.id}")
-    await m.reply_text("🎬 **Desi49 Bot PRO v5.8 (Consolidated)**\n\n📥 URL bhejiye → 📤 Ultra-Fast Video mil jayega\n\n🔹 `/c_<task_id>` se task cancel karein\n🔹 `/queue` se queue dekhein\n🔹 ⚡ Parallel Sessions Upload Active")
+    await m.reply_text("🎬 **Desi49 Bot PRO v5.9 (Refactored Logs)**\n\n📥 URL bhejiye → 📤 Ultra-Fast Video mil jayega\n\n🔹 `/c_<task_id>` se task cancel karein\n🔹 `/queue` se queue dekhein\n🔹 ⚡ Parallel Sessions Upload Active")
 
 @app.on_message(filters.command("queue") & filters.private)
 async def queue_status(_, m: Message):
@@ -586,12 +601,7 @@ async def worker():
 
 async def main():
     await app.start()
-    # Aggressively silence Pyrogram loggers after start
-    for logger_name in logging.root.manager.loggerDict:
-        if "pyrogram" in logger_name:
-            logging.getLogger(logger_name).setLevel(logging.WARNING)
-            
-    log.info("✅ Desi49 Bot PRO v5.8 Started!")
+    log.info("✅ Desi49 Bot PRO v5.9 Started!")
     asyncio.create_task(worker())
     from pyrogram import idle
     await idle()
