@@ -1,0 +1,6 @@
+kurigram
+tgcrypto
+uvloop
+aiohttp
+aiofiles
+psutil

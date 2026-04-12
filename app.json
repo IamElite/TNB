@@ -1,0 +1,52 @@
+{
+  "name": "Desi49 Video Bot",
+  "description": "Telegram bot to download and upload videos from desii49.com",
+  "keywords": ["telegram", "bot", "video", "downloader"],
+  "stack": "heroku-24",
+  "formation": {
+    "worker": {
+      "quantity": 1,
+      "size": "standard-2x"
+    }
+  },
+  "env": {
+    "API_ID": {
+      "description": "Telegram API ID from my.telegram.org",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "Telegram API Hash from my.telegram.org",
+      "required": true
+    },
+    "BOT_TOKEN": {
+      "description": "Bot token from @BotFather",
+      "required": true
+    },
+    "OWNER_ID": {
+      "description": "Your Telegram user ID",
+      "required": true
+    },
+    "DUMP_CHANNEL": {
+      "description": "Channel ID where all downloaded videos will be dumped (e.g. -1001234567890)",
+      "required": true
+    },
+    "UPSTREAM_REPO": {
+      "description": "Upstream GitHub repo URL (e.g. https://github.com/IamElite/TNB)",
+      "value": "https://github.com/IamElite/TNB",
+      "required": false
+    },
+    "UPSTREAM_BRANCH": {
+      "description": "Upstream branch name",
+      "value": "ds49",
+      "required": false
+    }
+  },
+  "buildpacks": [
+    {
+      "url": "heroku-community/apt"
+    },
+    {
+      "url": "heroku/python"
+    }
+  ]
+}
