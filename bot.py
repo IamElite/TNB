@@ -483,16 +483,24 @@ async def cancel_task_handler(client: Client, message: Message):
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(_, m: Message):
     log.info(f"👤 Start command from: {m.from_user.id}")
-    btn = InlineKeyboardMarkup([[InlineKeyboardButton("👤 Owner Info", url=f"https://t.me/user?id={OWNER_PROFILE_ID}")]])
-    await m.reply_text(
-        "🎬 **Welcome to Desi49 Bot PRO**\n\n"
-        "📥 Send any URL to download and upload with extreme speed!\n\n"
-        f"👤 **Owner**: [Click Here to Message](tg://user?id={OWNER_PROFILE_ID})\n\n"
-        "🔹 `/queue` - Check current tasks\n"
-        "🔹 `/c_<id>` - Cancel your task",
-        reply_markup=btn,
-        parse_mode=enums.ParseMode.MARKDOWN
+    btn = InlineKeyboardMarkup([[InlineKeyboardButton("👤 Contact Owner", url=f"https://t.me/user?id={OWNER_PROFILE_ID}")]])
+    
+    welcome_text = (
+        "🚀 **Welcome to Desi49 Bot PRO**\n\n"
+        "The fastest video downloader engine with parallel upload technology!\n\n"
+        "✨ **Features:**\n"
+        "  ⚡ `Ultra-Fast Speed` (1Gbps+ Pipe)\n"
+        "  🎬 `Auto Metadata` (Title, Duration, Resolution)\n"
+        "  🔄 `Parallel Uploads` (No waiting)\n"
+        "  🚫 `Zero Ads` / Zero Lag\n\n"
+        "📥 **How to use?**\n"
+        "Just send any supported video link and let me do the magic!\n\n"
+        "🛠 **Commands:**\n"
+        "  🔹 `/queue` - Check your position\n"
+        "  🔹 `/c_<id>` - Cancel any task\n"
     )
+    
+    await m.reply_text(welcome_text, reply_markup=btn, parse_mode=enums.ParseMode.MARKDOWN)
 
 @app.on_message(filters.command("queue") & filters.private)
 async def queue_status(_, m: Message):
