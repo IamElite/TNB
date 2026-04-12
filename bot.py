@@ -1,5 +1,5 @@
-"""Desi49 Bot PRO v5.15 - Balanced Speed & Stability
-✅ 8 Parallel Workers | ✅ FloodWait Fix | ✅ CPU Optimized | ✅ Python 3.14 Fix"""
+"""Desi49 Bot PRO v5.16 - Speed Harmonized
+✅ 10 Staggered Workers | ✅ Network Optimized | ✅ CPU Balanced | ✅ Python 3.14 Fix"""
 import os, re, time, base64, asyncio, logging, psutil, uuid, struct, math, types, random
 from math import ceil
 from random import randint
@@ -116,8 +116,8 @@ class TaskManager:
         return False
 
 class HyperTGUpload:
-    """Parallel session uploader - v5.15"""
-    def __init__(self, client, workers=8): # Reduced to 8 to avoid FloodWait
+    """Parallel session uploader - Harmonized v5.16"""
+    def __init__(self, client, workers=10): # Level 10
         self.client = client
         self.workers = workers
         self._processed = 0
@@ -170,8 +170,6 @@ class HyperTGUpload:
                     await session.invoke(rpc)
                     self._processed += len(data)
                     queue.task_done()
-                    # Small delay to prevent hitting consecutive request limits
-                    await asyncio.sleep(0.02)
         finally:
             try: await session.stop()
             except: pass
@@ -187,7 +185,11 @@ class HyperTGUpload:
         is_big = size > 10 * 1024 * 1024
         queue = asyncio.Queue(maxsize=self.workers * 2)
         
-        tasks = [asyncio.create_task(self._worker(queue, path, file_id, is_big, total_parts, chunk_size)) for i in range(self.workers)]
+        # Staggered Worker Startup (0.1s delay)
+        tasks = []
+        for i in range(self.workers):
+            tasks.append(asyncio.create_task(self._worker(queue, path, file_id, is_big, total_parts, chunk_size)))
+            await asyncio.sleep(0.1)
         
         if progress:
             async def report():
@@ -481,7 +483,7 @@ async def cancel_task_handler(client: Client, message: Message):
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(_, m: Message):
     log.info(f"👤 Start command from: {m.from_user.id}")
-    await m.reply_text("🎬 **Desi49 Bot PRO v5.15 (Balanced Extreme)**\n\n📥 URL bhejiye → 📤 Ultra-Fast Video mil jayega\n\n🔹 `/c_<task_id>` se task cancel karein\n🔹 `/queue` se queue dekhein\n🔹 ⚡ Parallel Sessions Upload Active")
+    await m.reply_text("🎬 **Desi49 Bot PRO v5.16 (Speed Harmonized)**\n\n📥 URL bhejiye → 📤 Ultra-Fast Video mil jayega\n\n🔹 `/c_<task_id>` se task cancel karein\n🔹 `/queue` se queue dekhein\n🔹 ⚡ Parallel Sessions Upload Active")
 
 @app.on_message(filters.command("queue") & filters.private)
 async def queue_status(_, m: Message):
@@ -533,9 +535,9 @@ async def process_request(client: Client, message: Message, url: str, status: Me
         caption = f"🎬 **{title}**\n📦 `{format_size(size)}`"
         
         # HyperUL Logic
-        log.info(f"⚡ Task {task_id}: Starting HyperUL upload (8 workers)...")
-        await status.edit_text(f"🎬 `{title}`\n\n⚡ **HyperUL Balanced Upload Start**...")
-        uploader = HyperTGUpload(client, workers=8) # Balanced for anti-flood
+        log.info(f"⚡ Task {task_id}: Starting HyperUL upload (10 staggered workers)...")
+        await status.edit_text(f"🎬 `{title}`\n\n⚡ **HyperUL Harmonized Upload Start**...")
+        uploader = HyperTGUpload(client, workers=10)
         start_up = time.time()
         
         input_file = None
@@ -620,7 +622,7 @@ async def worker():
 
 async def main():
     await app.start()        
-    log.info("✅ Desi49 Bot PRO v5.15 Started!")
+    log.info("✅ Desi49 Bot PRO v5.16 Started!")
     asyncio.create_task(worker())
     from pyrogram import idle
     await idle()
