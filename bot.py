@@ -1,5 +1,5 @@
-"""Desi49 Bot PRO v5.12 - Multi-Session Ultra-Fast
-✅ Parallel Session Upload | ✅ Python 3.14 Fix | ✅ Deadlock Fix | ✅ Clean Logs"""
+"""Desi49 Bot PRO v5.13 - Multi-Session Ultra-Fast
+✅ Parallel Session Upload | ✅ Patched None Fix | ✅ Python 3.14 Fix | ✅ Clean Logs"""
 import os, re, time, base64, asyncio, logging, psutil, uuid, struct, math, types, random
 from math import ceil
 from random import randint
@@ -116,7 +116,7 @@ class TaskManager:
         return False
 
 class HyperTGUpload:
-    """Parallel session uploader - Python 3.14 & Kurigram compatible"""
+    """Parallel session uploader - v5.13"""
     def __init__(self, client, workers=6):
         self.client = client
         self.workers = workers
@@ -130,7 +130,6 @@ class HyperTGUpload:
             auth_key = await self.client.storage.auth_key()
             test_mode = await self.client.storage.test_mode()
             
-            # Dynamic Session Init for different library versions
             kwargs = {
                 "client": self.client,
                 "dc_id": dc_id,
@@ -139,10 +138,8 @@ class HyperTGUpload:
                 "is_media": True
             }
             
-            # Detect extra params needed by Kurigram/Python 3.14
             sig = signature(Session.__init__)
             if "server_address" in sig.parameters:
-                # Get IP for the DC (standard Telegram DC production IPs)
                 dc_ips = {1: "149.154.175.50", 2: "149.154.167.51", 3: "149.154.175.100", 4: "149.154.167.91", 5: "91.108.56.130"}
                 kwargs["server_address"] = dc_ips.get(dc_id, "91.108.56.130")
             if "port" in sig.parameters:
@@ -485,7 +482,7 @@ async def cancel_task_handler(client: Client, message: Message):
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(_, m: Message):
     log.info(f"👤 Start command from: {m.from_user.id}")
-    await m.reply_text("🎬 **Desi49 Bot PRO v5.12 (Flexible Sessions)**\n\n📥 URL bhejiye → 📤 Ultra-Fast Video mil jayega\n\n🔹 `/c_<task_id>` se task cancel karein\n🔹 `/queue` se queue dekhein\n🔹 ⚡ Parallel Sessions Upload Active")
+    await m.reply_text("🎬 **Desi49 Bot PRO v5.13 (Stabilized)**\n\n📥 URL bhejiye → 📤 Ultra-Fast Video mil jayega\n\n🔹 `/c_<task_id>` se task cancel karein\n🔹 `/queue` se queue dekhein\n🔹 ⚡ Parallel Sessions Upload Active")
 
 @app.on_message(filters.command("queue") & filters.private)
 async def queue_status(_, m: Message):
@@ -555,7 +552,10 @@ async def process_request(client: Client, message: Message, url: str, status: Me
         original_save_file = client.save_file
         if input_file:
             async def patched_save_file(path, *args, **kwargs):
-                if os.path.abspath(path) == os.path.abspath(filepath): return input_file
+                if not path or not isinstance(path, (str, bytes, os.PathLike)):
+                    return await original_save_file(path, *args, **kwargs)
+                if os.path.abspath(path) == os.path.abspath(filepath):
+                    return input_file
                 return await original_save_file(path, *args, **kwargs)
             client.save_file = patched_save_file
 
@@ -626,7 +626,7 @@ async def main():
         if "pyrogram" in logger_name:
             logging.getLogger(logger_name).setLevel(logging.WARNING)
             
-    log.info("✅ Desi49 Bot PRO v5.12 Started!")
+    log.info("✅ Desi49 Bot PRO v5.13 Started!")
     asyncio.create_task(worker())
     from pyrogram import idle
     await idle()
