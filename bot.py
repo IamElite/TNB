@@ -1,5 +1,5 @@
-"""Desi49 Bot PRO v5.18 - Owner Button Fix
-✅ Callback-based Owner Contact | ✅ Clean UI | ✅ Speed Harmonized | ✅ Python 3.14 Fix"""
+"""Desi49 Bot PRO v5.18 - Owner Button Fixed
+✅ Callback-based Owner Profile | ✅ Branding Removed | ✅ Extreme Speed | ✅ Python 3.14 Fix"""
 import os, re, time, base64, asyncio, logging, psutil, uuid, struct, math, types, random
 from math import ceil
 from random import randint
@@ -48,7 +48,7 @@ API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 OWNER_ID = int(os.environ.get("OWNER_ID", 0))
 DUMP_CHANNEL = int(os.environ.get("DUMP_CHANNEL", 0))
-OWNER_PROFILE_ID = 8057695402 # Integer ID
+OWNER_PROFILE_ID = "8057695402"
 
 DOWNLOAD_DIR = "downloads"
 MAX_TG_SIZE = 2 * 1024 * 1024 * 1024
@@ -117,7 +117,7 @@ class TaskManager:
         return False
 
 class HyperTGUpload:
-    """Parallel session uploader - v5.18"""
+    """Parallel session uploader - Clean v5.18"""
     def __init__(self, client, workers=10):
         self.client = client
         self.workers = workers
@@ -483,7 +483,7 @@ async def cancel_task_handler(client: Client, message: Message):
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(_, m: Message):
     log.info(f"👤 Start command from: {m.from_user.id}")
-    btn = InlineKeyboardMarkup([[InlineKeyboardButton("👤 Owner", callback_data="owner_contact")]])
+    btn = InlineKeyboardMarkup([[InlineKeyboardButton("👤 Owner", callback_data="open_owner")]])
     await m.reply_text(
         "🎬 **Welcome to Desi49 Bot PRO**\n\n"
         "📥 Send any URL to download and upload with extreme speed!\n\n"
@@ -492,21 +492,14 @@ async def start_cmd(_, m: Message):
         reply_markup=btn
     )
 
-@app.on_callback_query(filters.regex("owner_contact"))
-async def owner_contact_cb(client: Client, q: CallbackQuery):
-    log.info(f"💬 Owner contact requested by: {q.from_user.id}")
-    await q.answer("Sharing Owner Contact...", show_alert=False)
-    # The most reliable way to open a profile direct via ID
-    await client.send_contact(
-        chat_id=q.message.chat.id,
-        phone_number="+910000000000",
-        first_name="Desi49",
-        last_name="Owner",
-        vcard=f"BEGIN:VCARD\nVERSION:3.0\nN:Owner;Desi49\nTEL;TYPE=CELL:+910000000000\nEND:VCARD",
-        reply_to_message_id=q.message.id
+@app.on_callback_query(filters.regex("open_owner"))
+async def owner_callback_handler(_, cb: CallbackQuery):
+    await cb.answer()
+    await cb.message.reply_text(
+        f"👤 **Owner Profile Link**\n\n"
+        f"👉 [Owner Details (Click to open)](tg://user?id={OWNER_PROFILE_ID})",
+        parse_mode=enums.ParseMode.MARKDOWN
     )
-    # Also send a mention link in case contact fails to load
-    await q.message.reply_text(f"👤 **Owner Contact**: [Click Here](tg://user?id={OWNER_PROFILE_ID})")
 
 @app.on_message(filters.command("queue") & filters.private)
 async def queue_status(_, m: Message):
@@ -565,7 +558,7 @@ async def process_request(client: Client, message: Message, url: str, status: Me
         
         input_file = None
         try:
-            input_file = await uploader.save_file(filepath, progress=upload_progress, progress_args=(status, title, start_t, task_id, True))
+            input_file = await uploader.save_file(filepath, progress=upload_progress, progress_args=(status, title, start_up, task_id, True))
         except Exception as ue:
             log.warning(f"⚠️ Upload fallback for {task_id}: {ue}")
             await status.edit_text(f"🎬 `{title}`\n\n🔄 Fallback upload start...")
