@@ -1,5 +1,5 @@
-"""Desi49 Bot PRO v5.17 - Clean & Custom
-✅ Start Message Button | ✅ Branding Removed | ✅ Extreme Speed | ✅ Python 3.14 Fix"""
+"""Desi49 Bot PRO v5.19 - Full Privacy & UI
+✅ Private Chat Only | ✅ Owner Button on Media | ✅ Extreme Speed | ✅ Python 3.14 Fix"""
 import os, re, time, base64, asyncio, logging, psutil, uuid, struct, math, types, random
 from math import ceil
 from random import randint
@@ -117,7 +117,7 @@ class TaskManager:
         return False
 
 class HyperTGUpload:
-    """Parallel session uploader - Clean v5.17"""
+    """Parallel session uploader - Optimized v5.19"""
     def __init__(self, client, workers=10):
         self.client = client
         self.workers = workers
@@ -471,7 +471,7 @@ async def upload_progress(current, total, status_msg, title, start_t, task_id: s
     try: await status_msg.edit_text(res, parse_mode=enums.ParseMode.MARKDOWN)
     except: pass
 
-@app.on_message(filters.regex(r"^/c_([a-zA-Z0-9]+)"))
+@app.on_message(filters.regex(r"^/c_([a-zA-Z0-9]+)") & filters.private)
 async def cancel_task_handler(client: Client, message: Message):
     task_id = message.matches[0].group(1)
     log.info(f"🚫 User {message.from_user.id} requested cancel for: {task_id}")
@@ -485,7 +485,7 @@ async def start_cmd(_, m: Message):
     log.info(f"👤 Start command from: {m.from_user.id}")
     btn = InlineKeyboardMarkup([[InlineKeyboardButton("👤 Owner", url=f"https://t.me/user?id={OWNER_PROFILE_ID}")]])
     await m.reply_text(
-        "⚡ **Desi49 Bot PRO v5.18**\n"
+        "⚡ **Desi49 Bot PRO v5.19**\n"
         "Ultra-Fast Video Downloader & Uploader.\n\n"
         "📥 **Send any Link to Start!**\n\n"
         "🔹 `/queue` - Check Tasks\n"
@@ -542,6 +542,9 @@ async def process_request(client: Client, message: Message, url: str, status: Me
         log.info(f"📦 Task {task_id} metadata: Dur={vid_duration}, Dim={vid_width}x{vid_height}")
         caption = f"🎬 **{title}**\n📦 `{format_size(size)}`"
         
+        # UI Button for all media sends
+        media_btn = InlineKeyboardMarkup([[InlineKeyboardButton("👤 Owner", url=f"https://t.me/user?id={OWNER_PROFILE_ID}")]])
+
         # Hyper Engine (Uploader)
         log.info(f"⚡ Task {task_id}: Starting Extreme Upload (10 staggered workers)...")
         await status.edit_text(f"🎬 `{title}`\n\n⚡ **Optimized Upload Start**...")
@@ -574,7 +577,8 @@ async def process_request(client: Client, message: Message, url: str, status: Me
                 "caption": caption,
                 "supports_streaming": True,
                 "parse_mode": enums.ParseMode.MARKDOWN,
-                "disable_notification": True
+                "disable_notification": True,
+                "reply_markup": media_btn
             }
             if vid_duration > 0: vid_kwargs["duration"] = vid_duration
             if vid_width > 0: vid_kwargs["width"] = vid_width
@@ -588,9 +592,10 @@ async def process_request(client: Client, message: Message, url: str, status: Me
                 log.info(f"📤 Task {task_id}: Uploading to Dump Channel")
                 kw_dump = vid_kwargs.copy()
                 kw_dump["caption"] += f"\nUID: `{message.from_user.id}`"
+                # Remove button from dump if not needed, but user said "Media par hona chaiye"
                 dump_msg = await client.send_video(chat_id=DUMP_CHANNEL, **kw_dump)
                 if dump_msg and dump_msg.video:
-                    await message.reply_video(video=dump_msg.video.file_id, caption=caption, supports_streaming=True, parse_mode=enums.ParseMode.MARKDOWN)
+                    await message.reply_video(video=dump_msg.video.file_id, caption=caption, supports_streaming=True, parse_mode=enums.ParseMode.MARKDOWN, reply_markup=media_btn)
                 else:
                     await message.reply_video(**vid_kwargs)
             else:
@@ -630,7 +635,7 @@ async def worker():
 
 async def main():
     await app.start()        
-    log.info("✅ Desi49 Bot PRO v5.17 Started!")
+    log.info("✅ Desi49 Bot PRO v5.19 Started!")
     asyncio.create_task(worker())
     from pyrogram import idle
     await idle()
