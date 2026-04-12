@@ -1,5 +1,5 @@
-"""Desi49 Bot PRO v5.6 - HyperUL Logging Edition
-✅ Multi-Session Parallel Upload | ✅ Detailed Logging | ✅ No Thumb"""
+"""Desi49 Bot PRO v5.8 - Multi-Session Ultra-Fast
+✅ Parallel Session Upload | ✅ Dimension Fix | ✅ Fully Silent Logs"""
 import os, re, time, base64, asyncio, logging, psutil, uuid, struct, math, types, random
 from math import ceil
 from random import randint
@@ -100,8 +100,8 @@ class TaskManager:
         return False
 
 class HyperTGUpload:
-    """Parallel session uploader for Ultra-Fast speed"""
-    def __init__(self, client, workers=8):
+    """Parallel session uploader for high-speed transfers"""
+    def __init__(self, client, workers=6): # Reduce workers for better stability
         self.client = client
         self.workers = workers
         self._processed = 0
@@ -109,16 +109,21 @@ class HyperTGUpload:
         self._cancelled = False
 
     async def _start_session(self):
-        dc_id = await self.client.storage.dc_id()
-        auth_key = await self.client.storage.auth_key()
-        test_mode = await self.client.storage.test_mode()
-        session = Session(self.client, dc_id, auth_key, test_mode, is_media=True)
-        await session.start()
-        self._sessions.append(session)
-        return session
+        try:
+            dc_id = await self.client.storage.dc_id()
+            auth_key = await self.client.storage.auth_key()
+            test_mode = await self.client.storage.test_mode()
+            session = Session(self.client, dc_id, auth_key, test_mode, is_media=True)
+            await session.start()
+            self._sessions.append(session)
+            return session
+        except Exception as e:
+            log.warning(f"HyperUL Session start failed: {e}")
+            return None
 
     async def _worker(self, queue, file_path, file_id, is_big, total_parts, chunk_size):
         session = await self._start_session()
+        if not session: return
         try:
             async with aiofiles.open(file_path, "rb") as f:
                 while not self._cancelled:
@@ -134,10 +139,13 @@ class HyperTGUpload:
                     self._processed += len(data)
                     queue.task_done()
         finally:
-            await session.stop()
+            try: await session.stop()
+            except: pass
 
     async def save_file(self, path, progress=None, progress_args=()):
         size = os.path.getsize(path)
+        log.info(f"HyperUL: Starting upload for {os.path.basename(path)} ({format_size(size)})")
+        
         chunk_size = 512 * 1024
         total_parts = ceil(size / chunk_size)
         if total_parts > 4000:
@@ -161,6 +169,9 @@ class HyperTGUpload:
             asyncio.create_task(report())
 
         await asyncio.gather(*tasks)
+        if self._processed < size:
+            raise Exception("HyperUL: Upload incomplete, processed bytes mismatch.")
+
         if is_big: return raw.types.InputFileBig(id=file_id, parts=total_parts, name=os.path.basename(path))
         return raw.types.InputFile(id=file_id, parts=total_parts, name=os.path.basename(path), md5_checksum="")
 
@@ -211,8 +222,7 @@ def clean_title(raw: str) -> str:
     if not raw: return "Video"
     raw = re.sub(r'\.(mp4|mkv|avi|webm)$', '', raw, flags=re.I)
     raw = re.sub(r'[_\-]?[0-9a-f]{20,}', '', raw)
-    raw = re.sub(r'[A-Za-z0-9]{15,}[_\-]?', '', raw)
-    # Don't clean it too hard if it results in empty string
+    # Ensure it's not empty
     cleaned = re.sub(r'[^\w\s]', ' ', raw)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned[:80] if len(cleaned) > 5 else raw[:80]
@@ -306,7 +316,7 @@ async def extract_video_info(page_url: str) -> dict:
 
                     return result
         except Exception as e:
-            log.error(f"Extraction attempt {attempt + 1} failed: {e}")
+            log.error(f"Extraction failed: {e}")
             if attempt == 1: return {"video_url": None, "title": None}
             await asyncio.sleep(1.5)
 
@@ -333,7 +343,7 @@ async def aria2_download(video_url: str, display_title: str, status_msg, task_id
         f"--header=Referer: {page_url or HEADERS['Referer']}",
     ]
 
-    log.info(f"📥 Task {task_id}: Starting download | URL: {video_url}")
+    log.info(f"📥 Task {task_id}: Starting download")
     process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
     TaskManager.ACTIVE_TASKS[task_id]["proc"] = process
 
@@ -388,7 +398,7 @@ async def aria2_download(video_url: str, display_title: str, status_msg, task_id
 
     await process.wait()
     if process.returncode != 0 or not os.path.exists(filepath) or TaskManager.is_cancelled(task_id):
-        log.error(f"❌ Task {task_id} download failed with code {process.returncode}")
+        log.error(f"❌ Task {task_id} download failed.")
         return None
     log.info(f"✅ Task {task_id} download complete.")
     return filepath
@@ -410,7 +420,7 @@ async def upload_progress(current, total, status_msg, title, start_t, task_id: s
     stats = get_system_stats(task_start=start_t)
 
     status_icon = "⚡" if is_hyper else "🔵"
-    status_text = "HyperUL Ultra-Fast" if is_hyper else "Uploading (Standard)"
+    status_text = "HyperUL Ultra-Fast" if is_hyper else "Uploading"
     bar = progress_bar(pct)
     tg_status = "ON | HYPER-WZML" if HAS_TGCRYPTO else "OFF (Slow)"
 
@@ -439,21 +449,21 @@ async def cancel_task_handler(client: Client, message: Message):
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(_, m: Message):
-    log.info(f"👤 Start command from: {m.from_user.id} (@{m.from_user.username or 'N/A'})")
-    await m.reply_text("🎬 **Desi49 Bot PRO v5.6 (HyperUL Edition)**\n\n📥 URL bhejiye → 📤 Ultra-Fast Video mil jayega\n\n🔹 `/c_<task_id>` se task cancel karein\n🔹 `/queue` se queue dekhein\n🔹 ⚡ Parallel Sessions Upload Active")
+    log.info(f"👤 Start command from: {m.from_user.id}")
+    await m.reply_text("🎬 **Desi49 Bot PRO v5.8 (Consolidated)**\n\n📥 URL bhejiye → 📤 Ultra-Fast Video mil jayega\n\n🔹 `/c_<task_id>` se task cancel karein\n🔹 `/queue` se queue dekhein\n🔹 ⚡ Parallel Sessions Upload Active")
 
 @app.on_message(filters.command("queue") & filters.private)
 async def queue_status(_, m: Message):
     pending = TaskManager.PENDING_QUEUE.qsize()
     active = len([t for t in TaskManager.ACTIVE_TASKS if not TaskManager.ACTIVE_TASKS[t].get("cancelled")])
-    log.info(f"📊 Queue check from {m.from_user.id}: Active={active}, Pending={pending}")
+    log.info(f"📊 Queue check from {m.from_user.id}")
     await m.reply_text(f"📊 **Queue Status**\n\n🔄 Active Tasks: `{active}`\n⏳ Pending Tasks: `{pending}`")
 
 @app.on_message(filters.regex(r"https?://[^\s]+") & filters.private)
 async def url_handler(client: Client, message: Message):
     url = message.matches[0].group(0)
     task_id = TaskManager.generate_task_id(url, 1)
-    log.info(f"🔗 URL Received from {message.from_user.id}: {url} | ID: {task_id}")
+    log.info(f"🔗 URL Received from {message.from_user.id} | ID: {task_id}")
     TaskManager.register_task(task_id)
     
     q_size = TaskManager.PENDING_QUEUE.qsize()
@@ -464,15 +474,13 @@ async def url_handler(client: Client, message: Message):
 async def process_request(client: Client, message: Message, url: str, status: Message, task_id: str):
     filepath = None
     try:
-        log.info(f"🚀 [TASK {task_id}] Process request started...")
-        if TaskManager.is_cancelled(task_id): 
-            log.info(f"Task {task_id} was cancelled before extraction.")
-            return
+        log.info(f"🚀 [TASK {task_id}] Processing...")
+        if TaskManager.is_cancelled(task_id): return
 
         info = await extract_video_info(url)
         if TaskManager.is_cancelled(task_id) or not info["video_url"]:
             if not info["video_url"]: 
-                log.warning(f"❌ Task {task_id} extraction failed: No video URL found.")
+                log.warning(f"❌ Task {task_id} extraction failed.")
                 await status.edit_text("❌ Video link nahi mila!")
             return
 
@@ -481,13 +489,11 @@ async def process_request(client: Client, message: Message, url: str, status: Me
         await status.edit_text(f"🎬 `{title}`\n\n📥 Starting Download...\n`/c_{task_id}` to cancel")
 
         filepath = await aria2_download(video_url, title, status, task_id, page_url=url)
-        if not filepath: 
-            log.error(f"❌ Task {task_id} download failed (aria2 return None)")
-            return
+        if not filepath: return
 
         size = os.path.getsize(filepath)
         if size > MAX_TG_SIZE:
-            log.warning(f"❌ Task {task_id} file too large: {size} bytes")
+            log.warning(f"❌ Task {task_id} file too large.")
             await status.edit_text(f"❌ {format_size(size)} > 2GB!")
             return
 
@@ -495,25 +501,28 @@ async def process_request(client: Client, message: Message, url: str, status: Me
         log.info(f"📦 Task {task_id} metadata: Dur={vid_duration}, Dim={vid_width}x{vid_height}")
         caption = f"🎬 **{title}**\n📦 `{format_size(size)}`"
         
-        # HyperUL Logic
-        log.info(f"⚡ Task {task_id}: Initializing HyperUL upload...")
+        # HyperUL Logic with Fallback
+        log.info(f"⚡ Task {task_id}: Starting HyperUL upload...")
         await status.edit_text(f"🎬 `{title}`\n\n⚡ **HyperUL Upload Start**...")
-        uploader = HyperTGUpload(client, workers=10)
+        uploader = HyperTGUpload(client, workers=6)
         start_up = time.time()
-        input_file = await uploader.save_file(filepath, progress=upload_progress, progress_args=(status, title, start_up, task_id, True))
+        
+        input_file = None
+        try:
+            input_file = await uploader.save_file(filepath, progress=upload_progress, progress_args=(status, title, start_up, task_id, True))
+        except Exception as ue:
+            log.warning(f"⚠️ HyperUL Failed for {task_id}, fallback to standard: {ue}")
+            await status.edit_text(f"🎬 `{title}`\n\n🔄 Fallback upload start...")
 
-        if TaskManager.is_cancelled(task_id):
-            log.info(f"🚫 Task {task_id} cancelled during HyperUL upload.")
-            return
+        if TaskManager.is_cancelled(task_id): return
 
         # Patching Client
         original_save_file = client.save_file
-        async def patched_save_file(path, *args, **kwargs):
-            if os.path.abspath(path) == os.path.abspath(filepath): 
-                log.info(f"✅ [TASK {task_id}] Using cached InputFile for path {path}")
-                return input_file
-            return await original_save_file(path, *args, **kwargs)
-        client.save_file = patched_save_file
+        if input_file:
+            async def patched_save_file(path, *args, **kwargs):
+                if os.path.abspath(path) == os.path.abspath(filepath): return input_file
+                return await original_save_file(path, *args, **kwargs)
+            client.save_file = patched_save_file
 
         try:
             vid_kwargs = {
@@ -521,25 +530,27 @@ async def process_request(client: Client, message: Message, url: str, status: Me
                 "caption": caption,
                 "supports_streaming": True,
                 "parse_mode": enums.ParseMode.MARKDOWN,
-                "duration": vid_duration,
-                "width": vid_width,
-                "height": vid_height,
                 "disable_notification": True
             }
-            
+            if vid_duration > 0: vid_kwargs["duration"] = vid_duration
+            if vid_width > 0: vid_kwargs["width"] = vid_width
+            if vid_height > 0: vid_kwargs["height"] = vid_height
+
+            if not input_file:
+                vid_kwargs["progress"] = upload_progress
+                vid_kwargs["progress_args"] = (status, title, start_up, task_id, False)
+
             if DUMP_CHANNEL:
-                log.info(f"📤 Task {task_id}: Uploading to Dump Channel {DUMP_CHANNEL}")
+                log.info(f"📤 Task {task_id}: Uploading to Dump Channel")
                 kw_dump = vid_kwargs.copy()
                 kw_dump["caption"] += f"\nUID: `{message.from_user.id}`"
                 dump_msg = await client.send_video(chat_id=DUMP_CHANNEL, **kw_dump)
                 if dump_msg and dump_msg.video:
-                    log.info(f"Forwarding Task {task_id} to user {message.from_user.id}")
                     await message.reply_video(video=dump_msg.video.file_id, caption=caption, supports_streaming=True, parse_mode=enums.ParseMode.MARKDOWN)
                 else:
-                    log.warning(f"Dump upload Task {task_id} weirdness: dump_msg.video is None")
                     await message.reply_video(**vid_kwargs)
             else:
-                log.info(f"📤 Task {task_id}: Direct upload to user")
+                log.info(f"📤 Task {task_id}: Direct upload")
                 await message.reply_video(**vid_kwargs)
         finally:
             client.save_file = original_save_file
@@ -547,8 +558,8 @@ async def process_request(client: Client, message: Message, url: str, status: Me
         log.info(f"🎉 Task {task_id} Success!")
 
     except Exception as e:
-        log.error(f"❌ Task {task_id} CRITICAL Error: {e}", exc_info=True)
-        try: await status.edit_text(f"❌ Error: {str(e)[:50]}")
+        log.error(f"❌ Task {task_id} Error: {e}", exc_info=True)
+        try: await status.edit_text("❌ Error occurred!")
         except: pass
     finally:
         TaskManager.unregister_task(task_id)
@@ -559,13 +570,12 @@ async def process_request(client: Client, message: Message, url: str, status: Me
             except: pass
 
 async def worker():
-    log.info("👷 Worker thread started.")
+    log.info("👷 Worker started.")
     while True:
         try:
             task = await TaskManager.PENDING_QUEUE.get()
-            log.info(f"👷 Worker picked up task: {task['task_id']} for user {task['user_id']}")
+            log.info(f"👷 Task pickup: {task['task_id']}")
             if TaskManager.is_cancelled(task["task_id"]):
-                log.info(f"Task {task['task_id']} was already cancelled in queue.")
                 TaskManager.unregister_task(task["task_id"])
             else:
                 await process_request(app, task["message"], task["url"], task["status_msg"], task["task_id"])
@@ -575,10 +585,13 @@ async def worker():
             await asyncio.sleep(2)
 
 async def main():
-    if not HAS_TGCRYPTO:
-        log.warning("⚡ SPEED TIP: 'pip install tgcrypto uvloop' for 10x speed!")
     await app.start()
-    log.info("✅ Desi49 Bot PRO v5.6 Started!")
+    # Aggressively silence Pyrogram loggers after start
+    for logger_name in logging.root.manager.loggerDict:
+        if "pyrogram" in logger_name:
+            logging.getLogger(logger_name).setLevel(logging.WARNING)
+            
+    log.info("✅ Desi49 Bot PRO v5.8 Started!")
     asyncio.create_task(worker())
     from pyrogram import idle
     await idle()
