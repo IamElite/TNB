@@ -483,13 +483,15 @@ async def cancel_task_handler(client: Client, message: Message):
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(_, m: Message):
     log.info(f"👤 Start command from: {m.from_user.id}")
-    btn = InlineKeyboardMarkup([[InlineKeyboardButton("👤 Owner", url=f"tg://openmessage?user_id={OWNER_PROFILE_ID}")]])
+    btn = InlineKeyboardMarkup([[InlineKeyboardButton("👤 Owner Info", url=f"https://t.me/user?id={OWNER_PROFILE_ID}")]])
     await m.reply_text(
         "🎬 **Welcome to Desi49 Bot PRO**\n\n"
         "📥 Send any URL to download and upload with extreme speed!\n\n"
+        f"👤 **Owner**: [Click Here to Message](tg://user?id={OWNER_PROFILE_ID})\n\n"
         "🔹 `/queue` - Check current tasks\n"
         "🔹 `/c_<id>` - Cancel your task",
-        reply_markup=btn
+        reply_markup=btn,
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
 @app.on_message(filters.command("queue") & filters.private)
