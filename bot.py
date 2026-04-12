@@ -1,5 +1,5 @@
-"""Desi49 Bot PRO v5.19 - Full Privacy & UI
-✅ Private Chat Only | ✅ Owner Button on Media | ✅ Extreme Speed | ✅ Python 3.14 Fix"""
+"""Desi49 Bot PRO v5.20 - Balanced UI & Dump Logic
+✅ Owner link: tg://openmessage | ✅ Button on User Media ONLY | ✅ Private Chat Only | ✅ Extreme Speed"""
 import os, re, time, base64, asyncio, logging, psutil, uuid, struct, math, types, random
 from math import ceil
 from random import randint
@@ -49,6 +49,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 OWNER_ID = int(os.environ.get("OWNER_ID", 0))
 DUMP_CHANNEL = int(os.environ.get("DUMP_CHANNEL", 0))
 OWNER_PROFILE_ID = "8057695402"
+OWNER_LINK = f"tg://openmessage?user_id={OWNER_PROFILE_ID}"
 
 DOWNLOAD_DIR = "downloads"
 MAX_TG_SIZE = 2 * 1024 * 1024 * 1024
@@ -117,7 +118,7 @@ class TaskManager:
         return False
 
 class HyperTGUpload:
-    """Parallel session uploader - Optimized v5.19"""
+    """Parallel session uploader - Optimized v5.20"""
     def __init__(self, client, workers=10):
         self.client = client
         self.workers = workers
@@ -483,9 +484,9 @@ async def cancel_task_handler(client: Client, message: Message):
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(_, m: Message):
     log.info(f"👤 Start command from: {m.from_user.id}")
-    btn = InlineKeyboardMarkup([[InlineKeyboardButton("👤 Owner", url=f"https://t.me/user?id={OWNER_PROFILE_ID}")]])
+    btn = InlineKeyboardMarkup([[InlineKeyboardButton("👤 Owner", url=OWNER_LINK)]])
     await m.reply_text(
-        "⚡ **Desi49 Bot PRO v5.19**\n"
+        "⚡ **Desi49 Bot PRO v5.20**\n"
         "Ultra-Fast Video Downloader & Uploader.\n\n"
         "📥 **Send any Link to Start!**\n\n"
         "🔹 `/queue` - Check Tasks\n"
@@ -542,8 +543,8 @@ async def process_request(client: Client, message: Message, url: str, status: Me
         log.info(f"📦 Task {task_id} metadata: Dur={vid_duration}, Dim={vid_width}x{vid_height}")
         caption = f"🎬 **{title}**\n📦 `{format_size(size)}`"
         
-        # UI Button for all media sends
-        media_btn = InlineKeyboardMarkup([[InlineKeyboardButton("👤 Owner", url=f"https://t.me/user?id={OWNER_PROFILE_ID}")]])
+        # User UI Button
+        user_media_btn = InlineKeyboardMarkup([[InlineKeyboardButton("👤 Owner", url=OWNER_LINK)]])
 
         # Hyper Engine (Uploader)
         log.info(f"⚡ Task {task_id}: Starting Extreme Upload (10 staggered workers)...")
@@ -577,8 +578,7 @@ async def process_request(client: Client, message: Message, url: str, status: Me
                 "caption": caption,
                 "supports_streaming": True,
                 "parse_mode": enums.ParseMode.MARKDOWN,
-                "disable_notification": True,
-                "reply_markup": media_btn
+                "disable_notification": True
             }
             if vid_duration > 0: vid_kwargs["duration"] = vid_duration
             if vid_width > 0: vid_kwargs["width"] = vid_width
@@ -592,14 +592,19 @@ async def process_request(client: Client, message: Message, url: str, status: Me
                 log.info(f"📤 Task {task_id}: Uploading to Dump Channel")
                 kw_dump = vid_kwargs.copy()
                 kw_dump["caption"] += f"\nUID: `{message.from_user.id}`"
-                # Remove button from dump if not needed, but user said "Media par hona chaiye"
+                # Dump Channel gets NO button
                 dump_msg = await client.send_video(chat_id=DUMP_CHANNEL, **kw_dump)
+                
+                # User gets video WITH button
                 if dump_msg and dump_msg.video:
-                    await message.reply_video(video=dump_msg.video.file_id, caption=caption, supports_streaming=True, parse_mode=enums.ParseMode.MARKDOWN, reply_markup=media_btn)
+                    await message.reply_video(video=dump_msg.video.file_id, caption=caption, supports_streaming=True, parse_mode=enums.ParseMode.MARKDOWN, reply_markup=user_media_btn)
                 else:
-                    await message.reply_video(**vid_kwargs)
+                    user_kwargs = vid_kwargs.copy()
+                    user_kwargs["reply_markup"] = user_media_btn
+                    await message.reply_video(**user_kwargs)
             else:
                 log.info(f"📤 Task {task_id}: Direct upload")
+                vid_kwargs["reply_markup"] = user_media_btn
                 await message.reply_video(**vid_kwargs)
         finally:
             client.save_file = original_save_file
@@ -635,7 +640,7 @@ async def worker():
 
 async def main():
     await app.start()        
-    log.info("✅ Desi49 Bot PRO v5.19 Started!")
+    log.info("✅ Desi49 Bot PRO v5.20 Started!")
     asyncio.create_task(worker())
     from pyrogram import idle
     await idle()
