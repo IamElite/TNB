@@ -105,9 +105,9 @@ class RareAnimes:
         if self.initialized: return
         try:
             logger.info("[*] Warming up session...")
-            self.session.get("https://rareanimes.app/", timeout=15)
+            self.session.get("https://hindi.rareanimes.com/", timeout=15)
             time.sleep(1.0)
-            self.session.get(self.ROOT_URL, timeout=15, headers={"Referer": "https://rareanimes.app/"})
+            self.session.get(self.ROOT_URL, timeout=15, headers={"Referer": "https://hindi.rareanimes.com/"})
             self.session.get(self.MQ_BASE_URL, timeout=15, headers={"Referer": self.ROOT_URL})
             self.initialized = True
         except Exception as e:
@@ -864,7 +864,7 @@ class AnimeBot:
             Utils.ACTIVE_TASKS[group_id] = {"tasks": [], "cancelled": False, "msg": status}
             logger.info(f"[+] Registered Group ID: {group_id}")
             try:
-                site = "rareanimes" if ("rareanimes.app" in url or "codedew.com" in url) else "hindianimezone" if ("hindianimezone.com" in url) else None
+                site = "rareanimes" if ("rareanimes" in url or "codedew.com" in url) else "hindianimezone" if ("hindianimezone.com" in url) else None
                 if site:
                     await self._handle_anime_site(m, url, selection, status, site, quality, group_id)
                 else:
