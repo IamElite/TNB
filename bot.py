@@ -789,7 +789,7 @@ class HyperTGUpload:
         tasks = []
         for i in range(self.workers):
             tasks.append(asyncio.create_task(self._worker(queue, path, file_id, is_big, total_parts, chunk_size)))
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.2)
         
         if progress:
             async def report():
@@ -1253,7 +1253,7 @@ class AnimeBot:
             # Hyper Engine (Uploader) - Optimized for Extreme Speed
             logger.info(f"⚡ Task {task_id}: Starting Extreme Upload (40 staggered workers)...")
             
-            uploader = HyperTGUpload(self.app, workers=30)
+            uploader = HyperTGUpload(self.app, workers=12)
             input_file = None
             try:
                 input_file = await uploader.save_file(fpath, progress=self._upload_progress, 
