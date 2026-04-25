@@ -16,12 +16,17 @@ from concurrent.futures import ThreadPoolExecutor
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-from pyrogram import Client, filters
+from pyrogram import Client, filters, enums, raw
 from pyrogram.types import Message
 from pyrogram.errors import MessageNotModified, FloodWait
+from pyrogram.session import Session
 from flask import Flask
 from curl_cffi import requests as currequests
 from bs4 import BeautifulSoup
+from math import ceil
+from random import randint
+from inspect import signature
+import aiofiles
 
 from HindiAnimeZone import HindiAnimeZone
 
@@ -679,76 +684,14 @@ class Utils:
         except: return False
 
     @staticmethod
-    def faststart_optimize(path: str):
-        """Pure Python Instant Faststart (0.1s)"""
+    async def faststart_optimize(path: str):
+        """Use FFmpeg for reliable Faststart optimization"""
         try:
-            moov_data = None
-            moov_pos = -1
-            mdat_pos = -1
-            ftyp_data = None
-            
-            with open(path, "rb") as f:
-                # 1. Map atoms
-                while True:
-                    curr = f.tell()
-                    header = f.read(8)
-                    if len(header) < 8: break
-                    size = int.from_bytes(header[:4], 'big')
-                    kind = header[4:8]
-                    
-                    if kind == b'ftyp':
-                        f.seek(curr)
-                        ftyp_data = f.read(size)
-                    elif kind == b'moov':
-                        moov_pos = curr
-                        f.seek(curr)
-                        moov_data = bytearray(f.read(size))
-                    elif kind == b'mdat':
-                        mdat_pos = curr
-                    
-                    if size == 1: size = int.from_bytes(f.read(8), 'big')
-                    if size <= 0: break
-                    f.seek(curr + size)
-
-            if moov_pos > mdat_pos and moov_data:
-                # 2. Patch Moov offsets
-                shift = len(moov_data)
-                idx = 0
-                while idx < len(moov_data) - 8:
-                    atom_size = int.from_bytes(moov_data[idx:idx+4], 'big')
-                    atom_type = moov_data[idx+4:idx+8]
-                    if atom_type in [b'stco', b'co64']:
-                        entry_count = int.from_bytes(moov_data[idx+12:idx+16], 'big')
-                        is_64 = (atom_type == b'co64')
-                        step = 8 if is_64 else 4
-                        offset_start = idx + 16
-                        for i in range(entry_count):
-                            start = offset_start + (i * step)
-                            old_off = int.from_bytes(moov_data[start:start+step], 'big')
-                            moov_data[start:start+step] = (old_off + shift).to_bytes(step, 'big')
-                    
-                    # Recurse into containers
-                    if atom_type in [b'moov', b'trak', b'mdia', b'minf', b'stbl']:
-                        idx += 8
-                    else:
-                        idx += atom_size if atom_size > 0 else 8
-
-                # 3. Write new file (fast copy)
-                out = path + ".fs"
-                with open(path, "rb") as src, open(out, "wb") as dst:
-                    dst.write(ftyp_data)
-                    dst.write(moov_data)
-                    src.seek(len(ftyp_data))
-                    while True:
-                        buf = src.read(1024*1024)
-                        if not buf: break
-                        # Skip original moov
-                        chunk_end = src.tell()
-                        if chunk_end > moov_pos:
-                            clip = len(buf) - (chunk_end - moov_pos)
-                            if clip > 0: dst.write(buf[:clip])
-                            break
-                        dst.write(buf)
+            out = path + ".tmp.mp4"
+            cmd = ["ffmpeg", "-y", "-v", "error", "-i", path, "-c", "copy", "-movflags", "+faststart", out]
+            proc = await asyncio.create_subprocess_exec(*cmd)
+            await proc.wait()
+            if proc.returncode == 0 and os.path.exists(out):
                 os.replace(out, path)
                 return True
         except Exception as e:
@@ -768,6 +711,108 @@ class Utils:
             await asyncio.sleep(e.value)
             await cls.safe_edit(message, text, force=True, **kwargs)
         except Exception: pass
+
+class HyperTGUpload:
+    """Parallel session uploader - Optimized for Extreme Speed"""
+    def __init__(self, client, workers=10):
+        self.client = client
+        self.workers = workers
+        self._processed = 0
+        self._sessions = []
+        self._cancelled = False
+
+    async def _start_session(self):
+        try:
+            dc_id = await self.client.storage.dc_id()
+            auth_key = await self.client.storage.auth_key()
+            test_mode = await self.client.storage.test_mode()
+            
+            kwargs = {
+                "client": self.client,
+                "dc_id": dc_id,
+                "auth_key": auth_key,
+                "test_mode": test_mode,
+                "is_media": True
+            }
+            
+            sig = signature(Session.__init__)
+            if "server_address" in sig.parameters:
+                dc_ips = {1: "149.154.175.50", 2: "149.154.167.51", 3: "149.154.175.100", 4: "149.154.167.91", 5: "91.108.56.130"}
+                kwargs["server_address"] = dc_ips.get(dc_id, "91.108.56.130")
+            if "port" in sig.parameters:
+                kwargs["port"] = 443
+                
+            session = Session(**kwargs)
+            await session.start()
+            self._sessions.append(session)
+            return session
+        except Exception as e:
+            logger.warning(f"Hyper Session Startup failed: {e}")
+            return None
+
+    async def _worker(self, queue, file_path, file_id, is_big, total_parts, chunk_size):
+        session = await self._start_session()
+        if not session: return
+        try:
+            async with aiofiles.open(file_path, "rb") as f:
+                while not self._cancelled:
+                    try:
+                        part_no = await queue.get()
+                        if part_no is None:
+                            queue.task_done()
+                            break
+                        await f.seek(part_no * chunk_size)
+                        data = await f.read(chunk_size)
+                        rpc = raw.functions.upload.SaveBigFilePart(file_id=file_id, file_part=part_no, file_total_parts=total_parts, bytes=data) if is_big else \
+                              raw.functions.upload.SaveFilePart(file_id=file_id, file_part=part_no, bytes=data)
+                        await session.invoke(rpc)
+                        self._processed += len(data)
+                        queue.task_done()
+                    except Exception as e:
+                        logger.error(f"Hyper Worker Error: {e}")
+                        break
+        finally:
+            try: await session.stop()
+            except: pass
+
+    async def save_file(self, path, progress=None, progress_args=()):
+        size = os.path.getsize(path)
+        logger.info(f"Starting Hyper upload for {os.path.basename(path)} ({Utils.human_bytes(size)})")
+        
+        chunk_size = 512 * 1024
+        total_parts = ceil(size / chunk_size)
+        
+        file_id = randint(0, 2**63 - 1)
+        is_big = size > 10 * 1024 * 1024
+        queue = asyncio.Queue(maxsize=self.workers * 2)
+        
+        tasks = []
+        for i in range(self.workers):
+            tasks.append(asyncio.create_task(self._worker(queue, path, file_id, is_big, total_parts, chunk_size)))
+            await asyncio.sleep(0.1)
+        
+        if progress:
+            async def report():
+                while not all(t.done() for t in tasks):
+                    try: 
+                        # Use call_soon_threadsafe or just await depending on progress nature
+                        if asyncio.iscoroutinefunction(progress):
+                            await progress(self._processed, size, *progress_args)
+                        else:
+                            progress(self._processed, size, *progress_args)
+                    except Exception: pass
+                    await asyncio.sleep(2.5)
+            asyncio.create_task(report())
+
+        for p in range(total_parts): await queue.put(p)
+        for _ in range(self.workers): await queue.put(None)
+
+        await asyncio.gather(*tasks)
+        if self._processed < size:
+            raise Exception("Hyper Upload incomplete, processed bytes mismatch.")
+
+        if is_big: return raw.types.InputFileBig(id=file_id, parts=total_parts, name=os.path.basename(path))
+        return raw.types.InputFile(id=file_id, parts=total_parts, name=os.path.basename(path), md5_checksum="")
 
 # --- CORE ENGINE ---
 class AnimeBot:
@@ -1204,9 +1249,35 @@ class AnimeBot:
         try:
             thumb = await self._make_thumb(fpath, dur)
             fname = os.path.basename(fpath)
-            await self.app.send_video(m.chat.id, fpath, caption=cap, duration=dur, width=w, height=h, thumb=thumb,
-                                    supports_streaming=True,
-                                    progress=self._upload_progress, progress_args=(f"**Uploading {current}/{total}**", status, start, fname, task_id, group_id))
+            
+            # Hyper Engine (Uploader) - Optimized for Extreme Speed
+            logger.info(f"⚡ Task {task_id}: Starting Extreme Upload (10 staggered workers)...")
+            
+            uploader = HyperTGUpload(self.app, workers=10)
+            input_file = None
+            try:
+                input_file = await uploader.save_file(fpath, progress=self._upload_progress, 
+                                                     progress_args=(f"**Extreme Uploading {current}/{total}**", status, start, fname, task_id, group_id))
+            except Exception as ue:
+                logger.warning(f"⚠️ Hyper Upload fallback for {task_id}: {ue}")
+            
+            # Patching Client
+            original_save_file = self.app.save_file
+            if input_file:
+                async def patched_save_file(path, *args, **kwargs):
+                    if not path or not isinstance(path, (str, bytes, os.PathLike)):
+                        return await original_save_file(path, *args, **kwargs)
+                    if os.path.abspath(path) == os.path.abspath(fpath):
+                        return input_file
+                    return await original_save_file(path, *args, **kwargs)
+                self.app.save_file = patched_save_file
+
+            try:
+                await self.app.send_video(m.chat.id, fpath, caption=cap, duration=dur, width=w, height=h, thumb=thumb,
+                                        supports_streaming=True)
+            finally:
+                self.app.save_file = original_save_file
+                
         except Exception as e: logger.error(f"Upload fail: {e}")
         finally:
             if thumb and os.path.exists(thumb):
@@ -1221,7 +1292,7 @@ class AnimeBot:
                 return [path]
                 
             if status: await Utils.safe_edit(status, "⚡ **Instant Optimization for Streaming...**", force=True)
-            await asyncio.to_thread(Utils.faststart_optimize, path)
+            await Utils.faststart_optimize(path)
             return [path]
         
         logger.info(f"[*] Splitting {path}...")
@@ -1494,7 +1565,7 @@ class AnimeBot:
             cmd = [
                 "ffmpeg", "-y", "-v", "error", "-i", fpath,
                 "-map", "0:v", "-map", f"0:{hindi_idx}",
-                "-c", "copy",
+                "-c", "copy", "-movflags", "+faststart",
                 "-metadata", f"title={Config.METADATA_KEY}",
                 "-metadata", f"artist={Config.METADATA_KEY}",
                 "-metadata:s:v:0", f"title={Config.METADATA_KEY}",
