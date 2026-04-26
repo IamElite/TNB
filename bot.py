@@ -48,7 +48,8 @@ class Config:
     
     # Speed Optimization Constants
     MAX_DOWNLOAD_WORKERS = 20 
-    MAX_UPLOAD_PARALLEL = 20
+    MAX_UPLOAD_PARALLEL = int(os.environ.get("MAX_UPLOAD_PARALLEL", 12))
+    UPLOAD_STAGGER_DELAY = float(os.environ.get("UPLOAD_STAGGER_DELAY", 0.2))
     PROGRESS_UPDATE_INTERVAL = 5
     
     # Concurrency Constants
@@ -789,7 +790,7 @@ class HyperTGUpload:
         tasks = []
         for i in range(self.workers):
             tasks.append(asyncio.create_task(self._worker(queue, path, file_id, is_big, total_parts, chunk_size)))
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(Config.UPLOAD_STAGGER_DELAY)
         
         if progress:
             async def report():
@@ -1253,7 +1254,7 @@ class AnimeBot:
             # Hyper Engine (Uploader) - Optimized for Extreme Speed
             logger.info(f"⚡ Task {task_id}: Starting Extreme Upload (40 staggered workers)...")
             
-            uploader = HyperTGUpload(self.app, workers=12)
+            uploader = HyperTGUpload(self.app, workers=Config.MAX_UPLOAD_PARALLEL)
             input_file = None
             try:
                 input_file = await uploader.save_file(fpath, progress=self._upload_progress, 
