@@ -836,7 +836,21 @@ class AnimeBot:
 
     def _setup_handlers(self):
         @self.app.on_message(filters.command("start") & filters.incoming)
-        async def start_handler(c, m): await m.reply("✅ **Anime Bot Pro** is active.\nUsage: `/grab <url> [selection]`")
+        async def start_handler(c, m):
+            msg = "✅ **Anime Bot Pro is active!**\n\n"
+            msg += "**🚀 Main Commands:**\n"
+            msg += "• `/grab <url> [selection]` - To bypass and download\n\n"
+            msg += "**🖼️ Thumbnail Settings:**\n"
+            msg += "• `/setthumb` (Reply to photo) - Set custom thumb\n"
+            msg += "• `/showthumb` - View current thumb\n"
+            msg += "• `/clearthumb` - Reset to default\n\n"
+            msg += "**📝 Caption Settings:**\n"
+            msg += "• `/setcaption_movie <template>`\n"
+            msg += "• `/setcaption_series <template>`\n"
+            msg += "• `/settings` - View your setup\n"
+            msg += "• `/placeholders` - List available tags\n\n"
+            msg += "Powered by @SyntaxRealm"
+            await m.reply(msg)
 
         @self.app.on_message(filters.regex(r"^/all_([^@\s]+)"))
         async def stop_all_handler(c, m):
