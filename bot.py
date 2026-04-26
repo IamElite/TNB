@@ -1366,8 +1366,8 @@ class AnimeBot:
             custom_thumb = user_data.get("thumb_id")
             
             if custom_thumb:
-                logger.info(f"[*] Using custom thumbnail file_id for Task {task_id}")
-                thumb = custom_thumb
+                logger.info(f"[*] Downloading custom thumbnail for Task {task_id}")
+                thumb = await self.app.download_media(custom_thumb, file_name=os.path.join(Config.THUMB_DIR, f"user_{user_id}.jpg"))
             else:
                 thumb_path = await self._make_thumb(fpath, dur)
                 thumb = thumb_path
@@ -1402,8 +1402,11 @@ class AnimeBot:
                 
         except Exception as e: logger.error(f"Upload fail: {e}")
         finally:
-            # Only delete if it's a local path and NOT a file_id
-            if thumb and isinstance(thumb, str) and not thumb.startswith("AgA") and os.path.exists(thumb):
+            # Delete if it's a local path (both custom and auto-generated)
+            if thumb and isinstance(thumb, str) and os.path.exists(thumb):
+                # Don't delete if it's the persistent user thumb, or do? 
+                # Better to delete to save space since we download it every time or use unique names.
+                # Let's use unique name for download to avoid conflicts
                 try: os.remove(thumb)
                 except: pass
 
