@@ -130,7 +130,7 @@ class RareAnimes:
                 return {"error": f"Failed to load page (Status {resp.status_code})", "episodes": []}
                 
             soup = BeautifulSoup(resp.text, "html.parser")
-            series_info = self._scrape_series_metadata(soup, url)
+            series_info = self._scrape_metadata(soup, url)
             raw_eps = self._extract_episodes(resp.text, url)
             
             if not raw_eps: return {"error": "No episodes found on page", "episodes": []}
@@ -174,7 +174,17 @@ class RareAnimes:
         data["episodes"] = results
         return data
 
-    def _scrape_series_metadata(self, soup: BeautifulSoup, url: str) -> Dict[str, Any]:
+    def get_metadata(self, url: str) -> Dict[str, Any]:
+        """External accessor for series metadata."""
+        try:
+            self.init_session()
+            resp = self.session.get(url, timeout=15)
+            if resp.status_code != 200: return {}
+            soup = BeautifulSoup(resp.text, "html.parser")
+            return self._scrape_metadata(soup, url)
+        except: return {}
+
+    def _scrape_metadata(self, soup: BeautifulSoup, url: str) -> Dict[str, Any]:
         """Extracts comprehensive metadata: Name, Season, and expected Qualities."""
         metadata = {
             "name": "Unknown",
@@ -246,7 +256,7 @@ class RareAnimes:
                 text = element.get_text(strip=True)
                 if len(text) > 5 and len(text) < 100:
                     # Look for 'Episode', 'Movie', or 'S01E01' patterns
-                    if any(x in text.lower() for x in ["episode", "movie", "special", r"s\d+e\d+"]):
+                    if any(x in text.lower() for x in ["episode", "movie", "special"]) or re.search(r"s\d+e\d+", text.lower()):
                         # Avoid 'Download Here' or 'Click below'
                         if not any(x in text.lower() for x in ["download", "click", "here", "watch", "online"]):
                             last_found_label = text
