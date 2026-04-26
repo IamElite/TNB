@@ -1358,6 +1358,7 @@ class AnimeBot:
         w, h, dur = await self._get_video_meta(fpath)
         cap = await self._make_caption(fpath, os.path.getsize(fpath), dur, series_info, user_id)
         start = time.time()
+        fname = os.path.basename(fpath)
         thumb = None
         try:
             # Check for custom thumbnail in DB
@@ -1401,8 +1402,8 @@ class AnimeBot:
                 
         except Exception as e: logger.error(f"Upload fail: {e}")
         finally:
-            # Only delete if it's a local path (auto-generated thumb)
-            if thumb and isinstance(thumb, str) and os.path.exists(thumb):
+            # Only delete if it's a local path and NOT a file_id
+            if thumb and isinstance(thumb, str) and not thumb.startswith("AgA") and os.path.exists(thumb):
                 try: os.remove(thumb)
                 except: pass
 
