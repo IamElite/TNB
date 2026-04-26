@@ -225,79 +225,87 @@ class RareAnimes:
     def _extract_episodes(self, html: str, referer: str) -> List[Dict[str, Any]]:
         """Parses HTML to find and group episode links using contextual headings."""
         soup = BeautifulSoup(html, "html.parser")
-        main_content = soup.select_one(".entry-content, article, #main")
-        if not main_content:
-            logger.warning("[!] Main content container not found, falling back to full soup.")
-            main_content = soup
+        
+        # 1. Noise Removal: Clean up sidebar, widgets, related posts, etc.
+        for noise in soup.select('.widget, .herald-posts-widget, .herald-section, .herald-sticky-prev, .herald-sticky-next, .wp-block-columns, .related-posts, .sharedaddy, .sidebar, script, style, nav, footer, header'):
+            noise.decompose()
 
+        main_content = soup.select_one(".entry-content, article, #main") or soup
+        
         potential_links = []
         seen_urls = set()
-        last_found_label = None
-        fallback_counter = 1
+        
+        # Initial label from page title (ideal for single-episode pages)
+        default_label = soup.title.string.split('|')[0].split('-')[0].strip() if soup.title else "Episode"
+        last_found_label = default_label
+        
+        # 2. Iterate and Extract
+        for element in main_content.find_all(["p", "div", "h1", "h2", "h3", "h4", "span", "a", "strong", "b"]):
+            # Context Update: If we see text that looks like an episode/movie label
+            if element.name != "a":
+                text = element.get_text(strip=True)
+                if len(text) > 5 and len(text) < 100:
+                    # Look for 'Episode', 'Movie', or 'S01E01' patterns
+                    if any(x in text.lower() for x in ["episode", "movie", "special", r"s\d+e\d+"]):
+                        # Avoid 'Download Here' or 'Click below'
+                        if not any(x in text.lower() for x in ["download", "click", "here", "watch", "online"]):
+                            last_found_label = text
+                continue
 
-        # Walk through all elements that might provide labels or links within main_content
-        for element in main_content.find_all(["p", "div", "h1", "h2", "h3", "h4", "span", "a"]):
-            if element.name == "a" and element.get("href"):
-                href = element["href"]
-                tag_text = element.get_text(strip=True)
-                # Detect hub or download link
-                is_valid = any(x in href for x in ["codedew.com", "multiquality", "store.animetoonhindi.com", "mega.nz", "drive.google.com"])
-                # Also treat as hub if text suggests it
-                is_hub_text = any(x in tag_text.lower() for x in ["multi", "watch", "mega", "g-drive", "batch"])
+            # Link Processing
+            href = element.get("href")
+            if not href or href.startswith("#"): continue
+            tag_text = element.get_text(strip=True)
+
+            # Skip internal navigation (Season 1, Season 2 links to other pages)
+            is_internal = any(x in href for x in ["rareanimes.com", "rareanimes.app", "rareanimes.org"])
+            is_nav = any(x in tag_text.lower() for x in ["season", "movie", "series", "check also", "related"])
+            if is_internal and is_nav: continue
+
+            # Detect Mirrors or Hubs
+            is_mirror = any(x in href for x in ["codedew.com", "multiquality", "mega.nz", "drive.google.com"])
+            is_hub_text = any(x in tag_text.lower() for x in ["multi", "watch", "mega", "g-drive", "batch"])
+            is_hub = (not is_mirror) and (any(x in href for x in ["store.animetoonhindi.com", "/multiquality/"]) or is_hub_text)
+            
+            if is_mirror or is_hub:
+                if href in seen_urls: continue
+                seen_urls.add(href)
                 
-                if is_valid or is_hub_text:
-                    if href in seen_urls: continue
-                    seen_urls.add(href)
-                    
-                    # Try to get label from tag text
-                    tag_label = self.EP_REGEX.search(tag_text)
-                    
-                    current_label = tag_label.group(1).title() if tag_label else last_found_label
-                    if not current_label:
-                        current_label = f"Episode {fallback_counter}"
-                        fallback_counter += 1
-                        
-                    is_mirror = any(x in href for x in ["codedew.com", "multiquality.click"])
-                    is_hub = (not is_mirror) and (any(x in href for x in ["store.animetoonhindi.com", "/multiquality/"]) or is_hub_text)
-                    potential_links.append({"url": href, "label": current_label, "is_hub": is_hub})
-            else:
-                # Update last seen label from text nodes
-                text = element.get_text(" ", strip=True)
-                if len(text) < 100: # Ignore very long blocks
-                    m = self.EP_REGEX.search(text)
-                    if m: 
-                        last_found_label = m.group(1).title()
-                        logger.debug(f"[*] Found Heading Label: {last_found_label}")
+                # Use tag text if it has a number, otherwise use contextual label
+                tag_label_match = self.EP_REGEX.search(tag_text)
+                label = tag_label_match.group(1).title() if tag_label_match else last_found_label
+                
+                potential_links.append({
+                    "url": href,
+                    "label": label,
+                    "is_hub": is_hub
+                })
 
-        # Process hubs and group by episode number
+        # 3. Process hubs and Group by Label
         final_links = []
         hub_items = [item for item in potential_links if item["is_hub"]]
         non_hub_items = [item for item in potential_links if not item["is_hub"]]
         final_links.extend(non_hub_items)
         
         if hub_items:
-            logger.info(f"[*] Extracting from {len(hub_items)} hubs concurrently...")
             with ThreadPoolExecutor(max_workers=Config.HUB_MAX_WORKERS) as executor:
                 future_to_item = {executor.submit(self._extract_hub_links, item["url"]): item for item in hub_items}
                 for future in future_to_item:
-                    item = future_to_item[future]
                     try:
                         hub_eps = future.result()
-                        if hub_eps: 
-                            # If hub links don't have good labels, use the hub's label
+                        if hub_eps:
+                            item = future_to_item[future]
                             for h in hub_eps:
-                                if "Episode" not in h["label"]: h["label"] = item["label"]
+                                # Ensure hub links inherit parent label context if they lack one
+                                if "Episode" not in h["label"] and "Movie" not in h["label"]:
+                                    h["label"] = item["label"]
                             final_links.extend(hub_eps)
-                        else: 
-                            final_links.append(item)
-                    except Exception as e:
-                        logger.error(f"[!] Hub extraction failed for {item['url']}: {e}")
-                        final_links.append(item)
-                
+                    except: pass
 
         grouped: Dict[str, List[Dict[str, str]]] = {}
         for link in final_links:
             ep_num = self._get_ep_num(link["label"])
+            # Keep the descriptive label if no number found
             key = f"Episode {ep_num}" if ep_num else link["label"]
             grouped.setdefault(key, []).append({"url": link["url"], "referer": referer})
             
@@ -1089,6 +1097,10 @@ class AnimeBot:
                         haz = HindiAnimeZone()
                         try: return await haz.resolve_episode(ep)
                         finally: await haz.close()
+                    if isinstance(bypasser, RareAnimes):
+                        ra = RareAnimes()
+                        ra.init_session() # Critical: Establishment of entry cookies
+                        return await ra.resolve_episode(ep)
                     return await bypasser.resolve_episode(ep)
                 return ep
             except Exception as e:
@@ -1193,7 +1205,8 @@ class AnimeBot:
                 ep_str = f"E{ep_num.group(1).zfill(2)}" if ep_num else f"E{str(current).zfill(2)}"
                 fname = f"{self._clean_noise(base_name)} {se_str} {ep_str} [{label.upper()}].mp4"
             
-            fpath = os.path.join(req_dir, re.sub(r'[\\/*?:"<>|]', "", fname).strip())
+            clean_name = re.sub(r'[\\/*?:"<>|]', '', fname).strip()
+            fpath = os.path.join(req_dir, f"{task_id}_{clean_name}")
             if await self._download_manager(url, fpath, status, meta, task_id, group_id):
                 # Another cancel check before processing
                 if task_id and Utils.ACTIVE_TASKS.get(task_id, {}).get("cancelled"): return None, None
@@ -1244,7 +1257,7 @@ class AnimeBot:
         conn = "16" # Force 16 connections to maximize speed
         directory, filename = os.path.split(path)
         
-        cmd = ["aria2c", "-x", conn, "-s", conn, "-j", conn, "--min-split-size=1M", "-d", directory, "-o", filename, "--user-agent", ua, "--check-certificate=false"]
+        cmd = ["aria2c", "-x", conn, "-s", conn, "-j", conn, "--min-split-size=1M", "-d", directory, "-o", filename, "--user-agent", ua, "--check-certificate=false", "--allow-overwrite=true"]
         for k, v in headers.items():
             if k.lower() not in ["user-agent", "cookie"]:
                 cmd.extend(["--header", f"{k}: {v}"])
@@ -1604,6 +1617,9 @@ class AnimeBot:
         try:
             if os.path.exists(path):
                 os.remove(path)
+                if os.path.exists(path + ".aria2"):
+                    try: os.remove(path + ".aria2")
+                    except: pass
                 logger.info(f"[+] Storage cleaned: {os.path.basename(path)}")
         except Exception as e:
             logger.error(f"Cleanup Error ({os.path.basename(path)}): {e}")
