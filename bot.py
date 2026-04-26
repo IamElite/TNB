@@ -236,9 +236,18 @@ class RareAnimes:
         """Parses HTML to find and group episode links using contextual headings."""
         soup = BeautifulSoup(html, "html.parser")
         
-        # 1. Noise Removal: Clean up sidebar, widgets, related posts, etc.
-        for noise in soup.select('.widget, .herald-posts-widget, .herald-section, .herald-sticky-prev, .herald-sticky-next, .wp-block-columns, .related-posts, .sharedaddy, .sidebar, script, style, nav, footer, header'):
-            noise.decompose()
+        # 1. Aggressive Noise Removal
+        noise_selectors = [
+            '.widget', '.herald-posts-widget', 
+            '.herald-sticky-prev', '.herald-sticky-next', 
+            '.related-posts', '.sharedaddy', '.sidebar', 'script', 'style', 
+            'nav', 'footer', 'header', '.penci-related-posts', '.penci-post-related',
+            '.penci-post-pagination', '.penci-post-share', '.penci-post-author',
+            '.penci-post-comments', '.check-also', '.penci-sidebar'
+        ]
+        for selector in noise_selectors:
+            for noise in soup.select(selector):
+                noise.decompose()
 
         main_content = soup.select_one(".entry-content, article, #main") or soup
         
@@ -274,8 +283,16 @@ class RareAnimes:
 
             # Detect Mirrors or Hubs
             is_mirror = any(x in href for x in ["codedew.com", "multiquality", "mega.nz", "drive.google.com"])
-            is_hub_text = any(x in tag_text.lower() for x in ["multi", "watch", "mega", "g-drive", "batch"])
-            is_hub = (not is_mirror) and (any(x in href for x in ["store.animetoonhindi.com", "/multiquality/"]) or is_hub_text)
+            is_hub_text = any(x in tag_text.lower() for x in ["multi", "watch", "g-drive", "batch"])
+            # 'mega' is tricky, only allow if not part of a series name
+            if "mega" in tag_text.lower() and not any(y in tag_text.lower() for y in ["force", "evolution", "zord", "megaforce"]):
+                is_hub_text = True
+
+            # Internal links should only be hubs if they have a specific hub path
+            if is_internal:
+                is_hub = any(x in href for x in ["store.animetoonhindi.com", "/multiquality/"])
+            else:
+                is_hub = (not is_mirror) and (any(x in href for x in ["store.animetoonhindi.com", "/multiquality/"]) or is_hub_text)
             
             if is_mirror or is_hub:
                 if href in seen_urls: continue
