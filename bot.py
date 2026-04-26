@@ -38,6 +38,7 @@ class Config:
     OWNER_ID = int(os.environ.get("OWNER_ID", 7074383232))
     AUTH_CHAT = int(os.environ.get("AUTH_CHAT", -1003192464251))
     METADATA_KEY = "[ @SyntaxRealm ]"
+    MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://Mrdaxx123:Mrdaxx123@cluster0.q1da65h.mongodb.net/?retryWrites=true&w=majority")
     
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
@@ -48,8 +49,8 @@ class Config:
     
     # Speed Optimization Constants
     MAX_DOWNLOAD_WORKERS = 20 
-    MAX_UPLOAD_PARALLEL = int(os.environ.get("MAX_UPLOAD_PARALLEL", 12))
-    UPLOAD_STAGGER_DELAY = float(os.environ.get("UPLOAD_STAGGER_DELAY", 0.2))
+    MAX_UPLOAD_PARALLEL = 12
+    UPLOAD_STAGGER_DELAY = 0.2
     PROGRESS_UPDATE_INTERVAL = 5
     
     # Concurrency Constants
@@ -827,6 +828,8 @@ class AnimeBot:
             sleep_threshold=60,
             in_memory=True,
         )
+        from database import Database
+        self.db = Database(Config.MONGO_URI)
         self._setup_handlers()
         if not os.path.exists(Config.DOWNLOAD_DIR): os.makedirs(Config.DOWNLOAD_DIR)
         if not os.path.exists(Config.THUMB_DIR): os.makedirs(Config.THUMB_DIR)
@@ -879,6 +882,100 @@ class AnimeBot:
             else:
                 logger.warning(f"[-] Invalid Cancel ID: {task_id}. Active: {list(Utils.ACTIVE_TASKS.keys())}")
                 await m.reply("❌ Invalid or expired Task ID.")
+
+        @self.app.on_message(filters.command("setthumb") & filters.incoming)
+        async def set_thumb_handler(c, m):
+            if not self._is_auth(m): return
+            if not m.reply_to_message or not m.reply_to_message.photo:
+                return await m.reply("❌ Reply to a photo with `/setthumb` to set it.")
+            
+            file_id = m.reply_to_message.photo.file_id
+            await self.db.set_thumbnail(m.from_user.id, file_id)
+            await m.reply("✅ **Custom thumbnail set successfully!**")
+
+        @self.app.on_message(filters.command("clearthumb") & filters.incoming)
+        async def clear_thumb_handler(c, m):
+            if not self._is_auth(m): return
+            await self.db.clear_thumbnail(m.from_user.id)
+            await m.reply("🗑️ **Custom thumbnail cleared.**")
+
+        @self.app.on_message(filters.command("showthumb") & filters.incoming)
+        async def show_thumb_handler(c, m):
+            if not self._is_auth(m): return
+            data = await self.db.get_user_data(m.from_user.id)
+            thumb_id = data.get("thumb_id")
+            if thumb_id:
+                await m.reply_photo(thumb_id, caption="🖼️ Your current custom thumbnail.")
+            else:
+                await m.reply("❌ No custom thumbnail set.")
+
+        @self.app.on_message(filters.command("setcaption_movie") & filters.incoming)
+        async def set_cap_movie_handler(c, m):
+            if not self._is_auth(m): return
+            template = m.text.split(None, 1)[1] if len(m.text.split()) > 1 else None
+            if not template:
+                return await m.reply("Usage: `/setcaption_movie <template>`\n\nPlaceholders: `{filename}`, `{size}`, `{duration}`, `{quality}`, `{name}`, `{year}`")
+            
+            await self.db.set_caption_movie(m.from_user.id, template)
+            await m.reply(f"✅ **Movie caption set!**\n\n`{template}`")
+
+        @self.app.on_message(filters.command("setcaption_series") & filters.incoming)
+        async def set_cap_series_handler(c, m):
+            if not self._is_auth(m): return
+            template = m.text.split(None, 1)[1] if len(m.text.split()) > 1 else None
+            if not template:
+                return await m.reply("Usage: `/setcaption_series <template>`\n\nPlaceholders: `{filename}`, `{size}`, `{duration}`, `{quality}`, `{name}`, `{season}`, `{episode}`")
+            
+            await self.db.set_caption_series(m.from_user.id, template)
+            await m.reply(f"✅ **Series caption set!**\n\n`{template}`")
+
+        @self.app.on_message(filters.command(["clearcaption_movie", "clearcaption_series"]) & filters.incoming)
+        async def clear_cap_handler(c, m):
+            if not self._is_auth(m): return
+            if "movie" in m.text:
+                await self.db.clear_caption_movie(m.from_user.id)
+                await m.reply("🗑️ **Movie caption reset to default.**")
+            else:
+                await self.db.clear_caption_series(m.from_user.id)
+                await m.reply("🗑️ **Series caption reset to default.**")
+
+        @self.app.on_message(filters.command("settings") & filters.incoming)
+        async def settings_handler(c, m):
+            if not self._is_auth(m): return
+            data = await self.db.get_user_data(m.from_user.id)
+            thumb_status = "✅ Set" if data.get("thumb_id") else "❌ Not Set"
+            movie_cap = data.get("movie_caption", "Default")
+            series_cap = data.get("series_caption", "Default")
+            
+            msg = f"⚙️ **Your Custom Settings:**\n\n"
+            msg += f"🖼️ **Thumbnail:** {thumb_status}\n\n"
+            msg += f"🎬 **Movie Caption:**\n`{movie_cap}`\n\n"
+            msg += f"📺 **Series Caption:**\n`{series_cap}`\n\n"
+            msg += f"💡 **Tip:** Use `/placeholders` to see available tags."
+            await m.reply(msg)
+
+        @self.app.on_message(filters.command("placeholders") & filters.incoming)
+        async def placeholders_handler(c, m):
+            if not self._is_auth(m): return
+            msg = "📊 **Available Placeholders:**\n\n"
+            msg += "🔹 `{filename}` - Original file name\n"
+            msg += "🔹 `{name}` - Anime/Movie name (Cleaned)\n"
+            msg += "🔹 `{size}` - File size (e.g. 500 MB)\n"
+            msg += "🔹 `{duration}` - Video duration\n"
+            msg += "🔹 `{quality}` - Video quality (e.g. 720p)\n"
+            msg += "🔹 `{lang}` - Audio language (Hindi/Dual)\n\n"
+            msg += "🎬 **For Movies Only:**\n"
+            msg += "🔹 `{year}` - Release year\n\n"
+            msg += "📺 **For Series Only:**\n"
+            msg += "🔹 `{season}` - Season number\n"
+            msg += "🔹 `{episode}` - Episode number\n\n"
+            msg += "🎨 **Formatting:**\n"
+            msg += "• `**bold**` or `<b>bold</b>`\n"
+            msg += "• `__italic__` or `<i>italic</i>`\n"
+            msg += "• `` `code` `` or `<code>code</code>`\n"
+            msg += "• `[text](url)` or `<a href='url'>text</a>`\n\n"
+            msg += "📌 **Example:**\n`/setcaption_series 🎬 <b>{name}</b>\n\nS{season} E{episode} | {quality}`"
+            await m.reply(msg)
 
         @self.app.on_message(filters.regex(r"^(?i)[/!]?(grab|fuck)\b") & filters.incoming)
         async def get_handler(c, m):
@@ -1105,7 +1202,8 @@ class AnimeBot:
         for p in paths:
             if task_id and Utils.ACTIVE_TASKS.get(task_id, {}).get("cancelled"): break
             if group_id and Utils.ACTIVE_TASKS.get(group_id, {}).get("cancelled"): break
-            await self._upload_file(m, p, status, current, total, os.path.basename(p), series_info, task_id, group_id)
+            user_id = m.from_user.id if m.from_user else m.chat.id
+            await self._upload_file(m, p, status, current, total, os.path.basename(p), series_info, task_id, group_id, user_id=user_id)
             asyncio.create_task(self._delayed_delete(p))
 
     async def _download_manager(self, url, path, status, meta, task_id=None, group_id=None):
@@ -1242,14 +1340,22 @@ class AnimeBot:
             logger.error(f"[!] curl_cffi fallback failed: {e}")
             return False
 
-    async def _upload_file(self, m, fpath, status, current, total, label, series_info, task_id=None, group_id=None):
+    async def _upload_file(self, m, fpath, status, current, total, label, series_info, task_id=None, group_id=None, user_id=None):
         w, h, dur = await self._get_video_meta(fpath)
-        cap = self._make_caption(fpath, os.path.getsize(fpath), dur, series_info)
+        cap = await self._make_caption(fpath, os.path.getsize(fpath), dur, series_info, user_id)
         start = time.time()
         thumb = None
         try:
-            thumb = await self._make_thumb(fpath, dur)
-            fname = os.path.basename(fpath)
+            # Check for custom thumbnail in DB
+            user_data = await self.db.get_user_data(user_id) if user_id else {}
+            custom_thumb = user_data.get("thumb_id")
+            
+            if custom_thumb:
+                logger.info(f"[*] Using custom thumbnail file_id for Task {task_id}")
+                thumb = custom_thumb
+            else:
+                thumb_path = await self._make_thumb(fpath, dur)
+                thumb = thumb_path
             
             # Hyper Engine (Uploader) - Optimized for Extreme Speed
             logger.info(f"⚡ Task {task_id}: Starting Extreme Upload (40 staggered workers)...")
@@ -1281,7 +1387,8 @@ class AnimeBot:
                 
         except Exception as e: logger.error(f"Upload fail: {e}")
         finally:
-            if thumb and os.path.exists(thumb):
+            # Only delete if it's a local path (auto-generated thumb)
+            if thumb and isinstance(thumb, str) and os.path.exists(thumb):
                 try: os.remove(thumb)
                 except: pass
 
@@ -1310,7 +1417,7 @@ class AnimeBot:
             if os.path.exists(out): split_files.append(out)
         return split_files
 
-    def _make_caption(self, path, size, dur, series_info):
+    async def _make_caption(self, path, size, dur, series_info, user_id=None):
         info = self._parse_filename(os.path.basename(path))
         
         # Priority: parse from series_info dict, then path
@@ -1338,8 +1445,36 @@ class AnimeBot:
         lang = "Hindi"
         if any(x in path.lower() for x in ["dual", "multi"]): lang = "Dual Audio"
 
+        # Check for custom template in DB
+        user_data = await self.db.get_user_data(user_id) if user_id else {}
+        is_movie = info.get('is_movie')
+        custom_template = user_data.get("movie_caption") if is_movie else user_data.get("series_caption")
+
+        if custom_template:
+            try:
+                # Prepare format dict
+                f_data = {
+                    "filename": os.path.basename(path),
+                    "size": Utils.human_bytes(size),
+                    "duration": Utils.time_formatter(dur*1000),
+                    "quality": q_str,
+                    "name": name,
+                    "lang": lang
+                }
+                if is_movie:
+                    f_data["year"] = info.get('year', 'N/A')
+                else:
+                    f_data["season"] = season or 'N/A'
+                    f_data["episode"] = info.get('episode', 'N/A')
+                
+                # Format template
+                return custom_template.format(**f_data)
+            except Exception as e:
+                logger.error(f"Template format error: {e}")
+                # Fallback to default if formatting fails
+
         # MOVIE FORMAT
-        if info.get('is_movie'):
+        if is_movie:
             yr_str = f" ({info['year']})" if info.get('year') else ""
             cap = f"🎬 **{name}**{yr_str}\n╭━━━━━━━━━━━━━━━━━━━╮\n"
             cap += f"│ 🍿 **Type:** Movie\n"
